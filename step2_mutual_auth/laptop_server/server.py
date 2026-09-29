@@ -1,16 +1,25 @@
 import socket
-import hmac
-import hashlib
 import os
+from cryptography.hazmat.primitives.asymmetric import ed25519
 
-# Pre-Shared Key (must match on ESP32 and Laptop)
-PSK = b"vpn_secret_key_123"
+# Server Ed25519 Keypair (Raw 32-byte seed)
+SERVER_PRIV_BYTES = bytes.fromhex(
+    "c765812d5a94054cbbead0e4335b248329891fbc0343fbee337d2399db1186fb"
+)
+server_private_key = ed25519.Ed25519PrivateKey.from_private_bytes(SERVER_PRIV_BYTES)
+server_public_key = server_private_key.public_key()
+
+# Authorized ESP32 Client Public Key
+CLIENT_PUB_BYTES = bytes.fromhex(
+    "7edd147c31ad36a424d378610ef89dd38c0922a8a9bb1402bcd20b975f8a0e31"
+)
+client_public_key = ed25519.Ed25519PublicKey.from_public_bytes(CLIENT_PUB_BYTES)
 
 HOST = "0.0.0.0"
 PORT = 9000
 
-CHALLENGE_LEN = 16
-HMAC_LEN = 32
+CHALLENGE_LEN = 32
+SIGNATURE_LEN = 64
 
 
 def get_local_ip():
@@ -23,10 +32,6 @@ def get_local_ip():
     finally:
         s.close()
     return ip
-
-
-def compute_hmac(key: bytes, data: bytes) -> bytes:
-    return hmac.new(key, data, hashlib.sha256).digest()
 
 
 def recv_exact(conn, n):
@@ -52,42 +57,42 @@ def authenticate_client(conn):
     print(f"       Nonce (Hex)    : {laptop_challenge.hex()}")
     print("       Status         : SENT")
 
-    # Step 2: Receive ESP32 response (32 bytes HMAC + 16 bytes Challenge)
-    data = recv_exact(conn, HMAC_LEN + CHALLENGE_LEN)
+    # Step 2: Receive ESP32 response (64-byte Ed25519 signature + 32-byte ESP32 challenge)
+    data = recv_exact(conn, SIGNATURE_LEN + CHALLENGE_LEN)
     if not data:
         print("[FAIL] ESP32 disconnected during authentication")
         return False
 
-    client_hmac = data[:HMAC_LEN]
-    esp32_challenge = data[HMAC_LEN:]
+    client_sig = data[:SIGNATURE_LEN]
+    esp32_challenge = data[SIGNATURE_LEN:]
 
     print("\n[MSG2] ESP32 Authentication Proof")
-    print("       Algorithm      : HMAC-SHA256")
-    print(f"       HMAC Proof     : {client_hmac.hex()}")
+    print("       Algorithm      : Ed25519 Digital Signature")
+    print(f"       Signature (Hex): {client_sig.hex()}")
     print(f"       Client Nonce   : {esp32_challenge.hex()}")
     print("       Status         : RECEIVED")
 
-    # Verify ESP32 response
-    expected_client_hmac = compute_hmac(PSK, laptop_challenge)
-    if not hmac.compare_digest(client_hmac, expected_client_hmac):
-        print("\n[VERIFY] ESP32 Authentication")
-        print("         Result       : FAILED (Invalid HMAC / Untrusted Client)")
+    # Verify ESP32 signature
+    try:
+        client_public_key.verify(client_sig, laptop_challenge)
+        print("\n[VERIFY] ESP32 Digital Signature")
+        print("         Result       : SUCCESS (Valid Ed25519 Signature)")
+    except Exception:
+        print("\n[VERIFY] ESP32 Digital Signature")
+        print("         Result       : FAILED (Invalid Signature / Untrusted Client)")
         return False
 
-    print("\n[VERIFY] ESP32 Authentication")
-    print("         Result       : SUCCESS")
-
-    # Step 3: Compute response to ESP32 challenge and send it
-    laptop_hmac = compute_hmac(PSK, esp32_challenge)
-    conn.sendall(laptop_hmac)
+    # Step 3: Server signs ESP32's challenge with its private key
+    laptop_sig = server_private_key.sign(esp32_challenge)
+    conn.sendall(laptop_sig)
 
     print("\n[MSG3] Server Authentication Proof")
-    print("       Algorithm      : HMAC-SHA256")
-    print(f"       HMAC Proof     : {laptop_hmac.hex()}")
+    print("       Algorithm      : Ed25519 Digital Signature")
+    print(f"       Signature (Hex): {laptop_sig.hex()}")
     print("       Status         : SENT")
 
     print("\n============================================================")
-    print("        MUTUAL AUTHENTICATION SUCCESSFUL")
+    print("        MUTUAL AUTHENTICATION SUCCESSFUL (Ed25519)")
     print("============================================================\n")
     print("[DATA TUNNEL]")
     return True
@@ -97,12 +102,13 @@ def main():
     local_ip = get_local_ip()
 
     print("\n============================================================")
-    print("              PQC VPN - LAPTOP GATEWAY")
+    print("         PQC VPN - LAPTOP GATEWAY (Ed25519 AUTH)")
     print("============================================================")
     print("\n[NETWORK]")
     print("[OK] Server listening")
     print(f"     Server IP      : {local_ip}")
     print(f"     Server Port    : {PORT}")
+    print(f"     Server PubKey  : {server_public_key.public_bytes_raw().hex()}")
 
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -117,7 +123,7 @@ def main():
             conn, addr = server.accept()
             print(f"[OK] ESP32 connected from {addr[0]}:{addr[1]}")
 
-            # Run mutual authentication first
+            # Run Ed25519 mutual authentication first
             if not authenticate_client(conn):
                 conn.close()
                 print("[ERROR] Connection terminated due to authentication failure.\n")
