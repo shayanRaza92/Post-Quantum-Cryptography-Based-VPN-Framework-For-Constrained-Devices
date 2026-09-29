@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Arduino / IDE builds
+build/
+*.bin
+*.elf
+*.hex
+
+# OS files
+.DS_Store
+*.swp
+*~
