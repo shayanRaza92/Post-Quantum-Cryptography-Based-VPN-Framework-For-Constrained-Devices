@@ -41,39 +41,67 @@ def recv_exact(conn, n):
 
 
 def authenticate_client(conn):
-    # Step 1: Generate laptop challenge and send it to ESP32
+    print("\n[MUTUAL AUTHENTICATION]")
+
+    # Step 1: Generate server challenge and send to ESP32
     laptop_challenge = os.urandom(CHALLENGE_LEN)
     conn.sendall(laptop_challenge)
-    print("Sent challenge to ESP32.")
 
-    # Step 2: Receive ESP32 response (32 bytes) + ESP32 challenge (16 bytes)
+    print("[MSG1] Server Challenge")
+    print(f"       Length         : {CHALLENGE_LEN} bytes")
+    print("       Status         : SENT")
+
+    # Step 2: Receive ESP32 response (32 bytes HMAC + 16 bytes Challenge)
     data = recv_exact(conn, HMAC_LEN + CHALLENGE_LEN)
     if not data:
-        print("ESP32 disconnected during authentication.")
+        print("[FAIL] ESP32 disconnected during authentication")
         return False
 
     client_hmac = data[:HMAC_LEN]
     esp32_challenge = data[HMAC_LEN:]
 
+    print("\n[MSG2] ESP32 Authentication Proof")
+    print("       Algorithm      : HMAC-SHA256")
+    print(f"       Proof Length   : {HMAC_LEN} bytes")
+    print(f"       Challenge      : {CHALLENGE_LEN} bytes")
+    print("       Status         : RECEIVED")
+
     # Verify ESP32 response
     expected_client_hmac = compute_hmac(PSK, laptop_challenge)
     if not hmac.compare_digest(client_hmac, expected_client_hmac):
-        print("FAILED: ESP32 sent invalid HMAC! Disconnecting.")
+        print("\n[VERIFY] ESP32 Authentication")
+        print("         Result       : FAILED (Invalid HMAC / Untrusted Client)")
         return False
-    print("ESP32 authenticated successfully.")
+
+    print("\n[VERIFY] ESP32 Authentication")
+    print("         Result       : SUCCESS")
 
     # Step 3: Compute response to ESP32 challenge and send it
     laptop_hmac = compute_hmac(PSK, esp32_challenge)
     conn.sendall(laptop_hmac)
-    print("Sent HMAC proof to ESP32.")
-    print(">>> Mutual Authentication Succeeded! <<<\n")
+
+    print("\n[MSG3] Server Authentication Proof")
+    print("       Algorithm      : HMAC-SHA256")
+    print(f"       Proof Length   : {HMAC_LEN} bytes")
+    print("       Status         : SENT")
+
+    print("\n============================================================")
+    print("        MUTUAL AUTHENTICATION SUCCESSFUL")
+    print("============================================================\n")
+    print("[DATA TUNNEL]")
     return True
 
 
 def main():
     local_ip = get_local_ip()
-    print(f"Step 2 Server listening on {local_ip}:{PORT}")
-    print("Waiting for ESP32 connection...\n")
+
+    print("\n============================================================")
+    print("              PQC VPN - LAPTOP GATEWAY")
+    print("============================================================")
+    print("\n[NETWORK]")
+    print("[OK] Server listening")
+    print(f"     Server IP      : {local_ip}")
+    print(f"     Server Port    : {PORT}")
 
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -83,38 +111,40 @@ def main():
         server.listen(1)
 
         while True:
+            print("\n[TCP TRANSPORT]")
+            print("Waiting for ESP32 connection...")
             conn, addr = server.accept()
-            print(f"\nESP32 connected from {addr[0]}:{addr[1]}")
+            print(f"[OK] ESP32 connected from {addr[0]}:{addr[1]}")
 
             # Run mutual authentication first
             if not authenticate_client(conn):
                 conn.close()
-                print("Connection closed due to authentication failure.\n")
+                print("[ERROR] Connection terminated due to authentication failure.\n")
                 continue
 
-            # If authenticated, exchange messages
+            # If authenticated, exchange tunnel messages
             try:
                 while True:
                     data = conn.recv(1024)
                     if not data:
-                        print("ESP32 disconnected.")
+                        print("\n[INFO] ESP32 disconnected.")
                         break
 
                     message = data.decode("utf-8", errors="ignore").strip()
-                    print(f"[From ESP32]: {message}")
-
-                    # Reply with ACK
-                    reply = f"ACK: {message}\n"
-                    conn.sendall(reply.encode("utf-8"))
+                    if message:
+                        print(f"[RX] {message}")
+                        reply = f"ACK: {message}\n"
+                        conn.sendall(reply.encode("utf-8"))
+                        print(f"[TX] ACK: {message}")
 
             except ConnectionResetError:
-                print("ESP32 connection reset.")
+                print("\n[INFO] ESP32 connection reset.")
             finally:
                 conn.close()
-                print("Ready for next connection...\n")
+                print("[INFO] Session closed. Waiting for next connection...\n")
 
     except KeyboardInterrupt:
-        print("\nServer stopped.")
+        print("\n[INFO] Server stopped by user.")
     finally:
         server.close()
 
