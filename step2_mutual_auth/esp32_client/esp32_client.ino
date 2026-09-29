@@ -34,6 +34,15 @@ bool read_exact(uint8_t* buffer, size_t len, unsigned long timeout_ms = 5000) {
   return (bytes_read == len);
 }
 
+// Helper to print bytes as uppercase hex string
+void print_hex(const uint8_t* data, size_t len) {
+  for (size_t i = 0; i < len; i++) {
+    if (data[i] < 0x10) Serial.print("0");
+    Serial.print(data[i], HEX);
+  }
+  Serial.println();
+}
+
 // Perform mutual challenge-response authentication
 bool perform_mutual_auth() {
   Serial.println("\n[MUTUAL AUTHENTICATION]");
@@ -46,6 +55,8 @@ bool perform_mutual_auth() {
   }
   Serial.println("[MSG1] Server Challenge");
   Serial.println("       Length         : 16 bytes");
+  Serial.print("       Nonce (Hex)    : ");
+  print_hex(laptop_challenge, 16);
   Serial.println("       Status         : RECEIVED");
 
   // Step 2: Compute HMAC proof and generate ESP32 challenge
@@ -62,8 +73,10 @@ bool perform_mutual_auth() {
 
   Serial.println("\n[MSG2] ESP32 Authentication Proof");
   Serial.println("       Algorithm      : HMAC-SHA256");
-  Serial.println("       Proof Length   : 32 bytes");
-  Serial.println("       Challenge      : 16 bytes");
+  Serial.print("       HMAC Proof     : ");
+  print_hex(esp32_hmac, 32);
+  Serial.print("       Client Nonce   : ");
+  print_hex(esp32_challenge, 16);
   Serial.println("       Status         : SENT");
 
   // Step 3: Receive 32-byte HMAC proof from server
@@ -75,7 +88,8 @@ bool perform_mutual_auth() {
 
   Serial.println("\n[MSG3] Server Authentication Proof");
   Serial.println("       Algorithm      : HMAC-SHA256");
-  Serial.println("       Proof Length   : 32 bytes");
+  Serial.print("       HMAC Proof     : ");
+  print_hex(laptop_hmac, 32);
   Serial.println("       Status         : RECEIVED");
 
   // Verify server HMAC proof

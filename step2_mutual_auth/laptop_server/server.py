@@ -49,6 +49,7 @@ def authenticate_client(conn):
 
     print("[MSG1] Server Challenge")
     print(f"       Length         : {CHALLENGE_LEN} bytes")
+    print(f"       Nonce (Hex)    : {laptop_challenge.hex()}")
     print("       Status         : SENT")
 
     # Step 2: Receive ESP32 response (32 bytes HMAC + 16 bytes Challenge)
@@ -62,8 +63,8 @@ def authenticate_client(conn):
 
     print("\n[MSG2] ESP32 Authentication Proof")
     print("       Algorithm      : HMAC-SHA256")
-    print(f"       Proof Length   : {HMAC_LEN} bytes")
-    print(f"       Challenge      : {CHALLENGE_LEN} bytes")
+    print(f"       HMAC Proof     : {client_hmac.hex()}")
+    print(f"       Client Nonce   : {esp32_challenge.hex()}")
     print("       Status         : RECEIVED")
 
     # Verify ESP32 response
@@ -82,7 +83,7 @@ def authenticate_client(conn):
 
     print("\n[MSG3] Server Authentication Proof")
     print("       Algorithm      : HMAC-SHA256")
-    print(f"       Proof Length   : {HMAC_LEN} bytes")
+    print(f"       HMAC Proof     : {laptop_hmac.hex()}")
     print("       Status         : SENT")
 
     print("\n============================================================")
