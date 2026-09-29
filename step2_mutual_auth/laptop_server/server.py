@@ -38,10 +38,13 @@ def recv_exact(conn, n):
     """Receive exactly n bytes from the socket."""
     buf = bytearray()
     while len(buf) < n:
-        chunk = conn.recv(n - len(buf))
-        if not chunk:
+        try:
+            chunk = conn.recv(n - len(buf))
+            if not chunk:
+                return None
+            buf.extend(chunk)
+        except socket.timeout:
             return None
-        buf.extend(chunk)
     return bytes(buf)
 
 
@@ -115,12 +118,13 @@ def main():
 
     try:
         server.bind((HOST, PORT))
-        server.listen(1)
+        server.listen(5)
 
         while True:
             print("\n[TCP TRANSPORT]")
             print("Waiting for ESP32 connection...")
             conn, addr = server.accept()
+            conn.settimeout(5.0)
             print(f"[OK] ESP32 connected from {addr[0]}:{addr[1]}")
 
             # Run Ed25519 mutual authentication first
@@ -129,7 +133,8 @@ def main():
                 print("[ERROR] Connection terminated due to authentication failure.\n")
                 continue
 
-            # If authenticated, exchange tunnel messages
+            # If authenticated, exchange tunnel messages (no timeout)
+            conn.settimeout(None)
             try:
                 while True:
                     data = conn.recv(1024)
