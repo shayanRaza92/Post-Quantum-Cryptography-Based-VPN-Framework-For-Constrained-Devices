@@ -47,6 +47,7 @@ Asymmetric mutual authentication using Ed25519 digital signatures established ov
 
 ```text
 step2_mutual_auth/
+├── generate_keys.py        # Utility script to generate fresh Ed25519 identity keypairs
 ├── laptop_server/
 │   └── server.py           # Python server with Ed25519 challenge-response logic
 ├── esp32_client/
