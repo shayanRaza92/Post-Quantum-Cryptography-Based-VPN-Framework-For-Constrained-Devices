@@ -55,7 +55,8 @@ While Phase A evaluated raw cryptographic operations in isolated chip memory, Ph
 
 * **`Phase_B_Network_Benchmark.ino`**: ESP32 Arduino sketch executing the 3-way handshake benchmarks.
 * **`benchmark_server.py`**: Python TCP gateway server running the mutual authentication verification loops.
-* **`benchmark_report.pdf`**: Complete PDF reference report containing KPI definitions, full iteration logs, terminal screenshots, and protocol pseudocode.
+* **`benchmark_report.pdf`**: Complete PDF reference report containing KPI definitions, full iteration logs, terminal screenshots, and the Phase B benchmark execution pseudocode.
+* **`benchmark_report.tex`**: LaTeX source document for the benchmark report.
 * **`graphs/`**: High-resolution Matplotlib benchmark plots.
 * **`screenshots/`**: Terminal captures recorded during live execution.
 * **`README.md`**: Technical overview and execution instructions.
