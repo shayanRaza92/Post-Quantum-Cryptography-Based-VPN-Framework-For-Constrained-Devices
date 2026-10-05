@@ -15,3 +15,12 @@ This directory contains the classical, non-quantum-resistant VPN implementation 
   * `step2_mutual_auth/`: End-to-end 3-way challenge-response handshake implementation.
   * `Mutual_Authentication algorithms benchmark/`: Benchmarks and selection data evaluating Ed25519, ECDSA P-256, and RSA-3072.
     * `Phase A Isolated Benchmark/`: Standalone Arduino benchmark sketch (`Phase_A_Isolated_Benchmark.ino`) and compiled reference documentation (`benchmark_report.pdf`).
+    * `Phase B Network Benchmark/`: Real-world Wi-Fi TCP handshake benchmark suite and performance report.
+
+### Deliverable 3: Key Exchange
+* Directory: `deliverable3_Key Exchange/`
+* Implements ephemeral Diffie-Hellman key exchange for forward-secret session key derivation.
+* Sub-components:
+  * `Key_Exchange algorithms benchmark/`: Benchmarking suite evaluating classical candidate schemes (X25519, ECDH P-256, and Classical DH-2048).
+    * `Phase A Isolated Benchmark/`: Standalone Arduino benchmark sketch (`Phase_A_Isolated_Benchmark.ino`) and evaluation report (`README.md`).
+
