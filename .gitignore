@@ -14,3 +14,13 @@ build/
 .DS_Store
 *.swp
 *~
+
+# LaTeX intermediate build files
+*.aux
+*.log
+*.out
+*.toc
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+
