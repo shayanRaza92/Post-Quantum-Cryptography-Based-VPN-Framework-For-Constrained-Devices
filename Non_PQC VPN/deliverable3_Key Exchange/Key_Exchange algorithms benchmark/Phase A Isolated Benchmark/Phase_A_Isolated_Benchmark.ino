@@ -1,5 +1,5 @@
-// ESP32 Classical Key Exchange Benchmark (Phase A: Isolated)
-// Evaluates X25519, ECDH P-256, and Classical DH-2048 on ESP32 at 240 MHz
+// ESP32 Classical Key Exchange Micro-Benchmark (Phase A: Isolated)
+// Evaluates X25519, ECDH P-256, and Classical DH-2048 at 240 MHz
 
 #include <sodium.h>
 
@@ -10,8 +10,8 @@
 #include "mbedtls/entropy.h"
 #include "mbedtls/ctr_drbg.h"
 
-#define RUNS_COUNT     100  // 100 iterations per algorithm
-#define CPU_SPEED      240  // ESP32 clock frequency in MHz
+#define RUNS_COUNT     100
+#define CPU_SPEED      240
 
 // RFC 3526 2048-bit MODP Prime
 static const unsigned char dh2048_p[256] = {
@@ -33,14 +33,12 @@ static const unsigned char dh2048_p[256] = {
   0x15,0x72,0x8E,0x5A,0x8A,0xAC,0xAA,0x68,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF
 };
 
-// Helper: Read hardware CPU cycle counter register
 static inline uint32_t get_cycles() {
   uint32_t cycles;
   __asm__ __volatile__("rsr %0, ccount" : "=a"(cycles));
   return cycles;
 }
 
-// Helper: Calculate average cycle count
 uint32_t get_average(uint32_t* times, int count) {
   uint64_t sum = 0;
   for (int i = 0; i < count; i++) {
@@ -49,8 +47,7 @@ uint32_t get_average(uint32_t* times, int count) {
   return (uint32_t)(sum / count);
 }
 
-// Struct to store results for comparison table
-struct Result {
+struct KpiMetrics {
   float keygen_ms;
   float derive_ms;
   float total_ms;
@@ -62,15 +59,12 @@ struct Result {
   uint32_t peak_heap_bytes;
 };
 
-Result res_x25519;
-Result res_p256;
-Result res_dh2048;
+KpiMetrics kpi_x25519;
+KpiMetrics kpi_p256;
+KpiMetrics kpi_dh2048;
 
-// ----------------------------------------------------
-// Test 1: X25519 (Curve25519 ECDH via Libsodium)
-// ----------------------------------------------------
 void test_x25519() {
-  Serial.println("\n>>> [1/3] Testing X25519 (Modern Lightweight Champion)");
+  Serial.println("\n[1/3] X25519 (Curve25519)");
 
   uint32_t time_keygen[RUNS_COUNT];
   uint32_t time_derive[RUNS_COUNT];
@@ -87,12 +81,10 @@ void test_x25519() {
   uint32_t peak_heap = 0;
 
   for (int i = 0; i < RUNS_COUNT; i++) {
-    // 1. Key generation
     uint32_t start = get_cycles();
     crypto_box_keypair(client_pk, client_sk);
     time_keygen[i] = get_cycles() - start;
 
-    // 2. Shared secret computation
     start = get_cycles();
     crypto_scalarmult(shared_secret, client_sk, peer_pk);
     time_derive[i] = get_cycles() - start;
@@ -104,29 +96,26 @@ void test_x25519() {
     }
   }
 
-  res_x25519.keygen_cycles = get_average(time_keygen, RUNS_COUNT);
-  res_x25519.derive_cycles = get_average(time_derive, RUNS_COUNT);
-  res_x25519.total_cycles = res_x25519.keygen_cycles + res_x25519.derive_cycles;
-  res_x25519.keygen_ms = (float)res_x25519.keygen_cycles / (CPU_SPEED * 1000.0f);
-  res_x25519.derive_ms = (float)res_x25519.derive_cycles / (CPU_SPEED * 1000.0f);
-  res_x25519.total_ms = res_x25519.keygen_ms + res_x25519.derive_ms;
-  res_x25519.pubkey_bytes = crypto_scalarmult_SCALARBYTES;
-  res_x25519.secret_bytes = crypto_scalarmult_BYTES;
-  res_x25519.peak_heap_bytes = peak_heap; // 0 bytes (uses task stack)
+  kpi_x25519.keygen_cycles = get_average(time_keygen, RUNS_COUNT);
+  kpi_x25519.derive_cycles = get_average(time_derive, RUNS_COUNT);
+  kpi_x25519.total_cycles = kpi_x25519.keygen_cycles + kpi_x25519.derive_cycles;
+  kpi_x25519.keygen_ms = (float)kpi_x25519.keygen_cycles / (CPU_SPEED * 1000.0f);
+  kpi_x25519.derive_ms = (float)kpi_x25519.derive_cycles / (CPU_SPEED * 1000.0f);
+  kpi_x25519.total_ms = kpi_x25519.keygen_ms + kpi_x25519.derive_ms;
+  kpi_x25519.pubkey_bytes = crypto_scalarmult_SCALARBYTES;
+  kpi_x25519.secret_bytes = crypto_scalarmult_BYTES;
+  kpi_x25519.peak_heap_bytes = peak_heap;
 
-  Serial.printf("    - Keypair Generation       : %9u cycles | %6.2f ms\n", res_x25519.keygen_cycles, res_x25519.keygen_ms);
-  Serial.printf("    - Shared Secret Derivation : %9u cycles | %6.2f ms\n", res_x25519.derive_cycles, res_x25519.derive_ms);
-  Serial.printf("    - Total Client Crypto Time : %9u cycles | %6.2f ms\n", res_x25519.total_cycles, res_x25519.total_ms);
-  Serial.printf("    - Public Key Wire Size     : %u bytes\n", res_x25519.pubkey_bytes);
-  Serial.printf("    - Shared Secret Output     : %u bytes\n", res_x25519.secret_bytes);
-  Serial.printf("    - Peak Heap Memory Used    : %u bytes (Stack only - zero heap fragmentation)\n", res_x25519.peak_heap_bytes);
+  Serial.printf("  KEX-1 Key Generation Latency    : %9u cycles | %6.2f ms\n", kpi_x25519.keygen_cycles, kpi_x25519.keygen_ms);
+  Serial.printf("  KEX-2 Public Key Wire Size      : %u bytes\n", kpi_x25519.pubkey_bytes);
+  Serial.printf("  KEX-3 Secret Derivation Latency : %9u cycles | %6.2f ms\n", kpi_x25519.derive_cycles, kpi_x25519.derive_ms);
+  Serial.printf("  KEX-4 Shared Secret Output Size : %u bytes\n", kpi_x25519.secret_bytes);
+  Serial.printf("  KEX-5 Total Client Compute Time : %9u cycles | %6.2f ms\n", kpi_x25519.total_cycles, kpi_x25519.total_ms);
+  Serial.printf("  KEX-6 Peak Dynamic Heap Memory  : %u bytes\n", kpi_x25519.peak_heap_bytes);
 }
 
-// ----------------------------------------------------
-// Test 2: ECDH P-256 (NIST Curve secp256r1 via mbedTLS)
-// ----------------------------------------------------
 void test_ecdh_p256() {
-  Serial.println("\n>>> [2/3] Testing ECDH P-256 (NIST Enterprise Standard)");
+  Serial.println("\n[2/3] ECDH P-256 (secp256r1)");
 
   uint32_t time_keygen[RUNS_COUNT];
   uint32_t time_derive[RUNS_COUNT];
@@ -156,19 +145,16 @@ void test_ecdh_p256() {
     mbedtls_mpi_init(&client_d);
     mbedtls_ecp_point_init(&client_Q);
 
-    // 1. Key generation
     uint32_t start = get_cycles();
     mbedtls_ecdh_gen_public(&grp, &client_d, &client_Q, mbedtls_ctr_drbg_random, &random_gen);
     time_keygen[i] = get_cycles() - start;
 
-    // 2. Shared secret derivation
     mbedtls_mpi z;
     mbedtls_mpi_init(&z);
     start = get_cycles();
     mbedtls_ecdh_compute_shared(&grp, &z, &peer_Q, &client_d, mbedtls_ctr_drbg_random, &random_gen);
     time_derive[i] = get_cycles() - start;
 
-    // Measure memory before cleanup
     uint32_t current_free = ESP.getFreeHeap();
     if (heap_before > current_free) {
       uint32_t used = heap_before - current_free;
@@ -188,29 +174,26 @@ void test_ecdh_p256() {
   mbedtls_ctr_drbg_free(&random_gen);
   mbedtls_entropy_free(&entropy);
 
-  res_p256.keygen_cycles = get_average(time_keygen, RUNS_COUNT);
-  res_p256.derive_cycles = get_average(time_derive, RUNS_COUNT);
-  res_p256.total_cycles = res_p256.keygen_cycles + res_p256.derive_cycles;
-  res_p256.keygen_ms = (float)res_p256.keygen_cycles / (CPU_SPEED * 1000.0f);
-  res_p256.derive_ms = (float)res_p256.derive_cycles / (CPU_SPEED * 1000.0f);
-  res_p256.total_ms = res_p256.keygen_ms + res_p256.derive_ms;
-  res_p256.pubkey_bytes = 65;
-  res_p256.secret_bytes = 32;
-  res_p256.peak_heap_bytes = peak_heap;
+  kpi_p256.keygen_cycles = get_average(time_keygen, RUNS_COUNT);
+  kpi_p256.derive_cycles = get_average(time_derive, RUNS_COUNT);
+  kpi_p256.total_cycles = kpi_p256.keygen_cycles + kpi_p256.derive_cycles;
+  kpi_p256.keygen_ms = (float)kpi_p256.keygen_cycles / (CPU_SPEED * 1000.0f);
+  kpi_p256.derive_ms = (float)kpi_p256.derive_cycles / (CPU_SPEED * 1000.0f);
+  kpi_p256.total_ms = kpi_p256.keygen_ms + kpi_p256.derive_ms;
+  kpi_p256.pubkey_bytes = 65;
+  kpi_p256.secret_bytes = 32;
+  kpi_p256.peak_heap_bytes = peak_heap;
 
-  Serial.printf("    - Keypair Generation       : %9u cycles | %6.2f ms\n", res_p256.keygen_cycles, res_p256.keygen_ms);
-  Serial.printf("    - Shared Secret Derivation : %9u cycles | %6.2f ms\n", res_p256.derive_cycles, res_p256.derive_ms);
-  Serial.printf("    - Total Client Crypto Time : %9u cycles | %6.2f ms\n", res_p256.total_cycles, res_p256.total_ms);
-  Serial.printf("    - Public Key Wire Size     : %u bytes (uncompressed point)\n", res_p256.pubkey_bytes);
-  Serial.printf("    - Shared Secret Output     : %u bytes\n", res_p256.secret_bytes);
-  Serial.printf("    - Peak Heap Memory Used    : %u bytes (EC point contexts)\n", res_p256.peak_heap_bytes);
+  Serial.printf("  KEX-1 Key Generation Latency    : %9u cycles | %6.2f ms\n", kpi_p256.keygen_cycles, kpi_p256.keygen_ms);
+  Serial.printf("  KEX-2 Public Key Wire Size      : %u bytes\n", kpi_p256.pubkey_bytes);
+  Serial.printf("  KEX-3 Secret Derivation Latency : %9u cycles | %6.2f ms\n", kpi_p256.derive_cycles, kpi_p256.derive_ms);
+  Serial.printf("  KEX-4 Shared Secret Output Size : %u bytes\n", kpi_p256.secret_bytes);
+  Serial.printf("  KEX-5 Total Client Compute Time : %9u cycles | %6.2f ms\n", kpi_p256.total_cycles, kpi_p256.total_ms);
+  Serial.printf("  KEX-6 Peak Dynamic Heap Memory  : %u bytes\n", kpi_p256.peak_heap_bytes);
 }
 
-// ----------------------------------------------------
-// Test 3: Classical DH-2048 (RFC 3526 MODP via mbedTLS)
-// ----------------------------------------------------
 void test_classical_dh2048() {
-  Serial.println("\n>>> [3/3] Testing Classical DH-2048 (RFC 3526 Legacy Baseline)");
+  Serial.println("\n[3/3] Classical DH-2048 (RFC 3526 MODP)");
 
   uint32_t time_keygen[RUNS_COUNT];
   uint32_t time_derive[RUNS_COUNT];
@@ -242,18 +225,15 @@ void test_classical_dh2048() {
     mbedtls_mpi_init(&client_Y);
     mbedtls_mpi_init(&shared_K);
 
-    // 1. Key generation: client_Y = G^client_X mod P
     uint32_t start = get_cycles();
     mbedtls_mpi_fill_random(&client_X, 32, mbedtls_ctr_drbg_random, &random_gen);
     mbedtls_mpi_exp_mod(&client_Y, &G, &client_X, &P, NULL);
     time_keygen[i] = get_cycles() - start;
 
-    // 2. Shared secret derivation: shared_K = peer_Y^client_X mod P
     start = get_cycles();
     mbedtls_mpi_exp_mod(&shared_K, &peer_Y, &client_X, &P, NULL);
     time_derive[i] = get_cycles() - start;
 
-    // Measure memory before cleanup
     uint32_t current_free = ESP.getFreeHeap();
     if (heap_before > current_free) {
       uint32_t used = heap_before - current_free;
@@ -274,64 +254,50 @@ void test_classical_dh2048() {
   mbedtls_ctr_drbg_free(&random_gen);
   mbedtls_entropy_free(&entropy);
 
-  res_dh2048.keygen_cycles = get_average(time_keygen, RUNS_COUNT);
-  res_dh2048.derive_cycles = get_average(time_derive, RUNS_COUNT);
-  res_dh2048.total_cycles = res_dh2048.keygen_cycles + res_dh2048.derive_cycles;
-  res_dh2048.keygen_ms = (float)res_dh2048.keygen_cycles / (CPU_SPEED * 1000.0f);
-  res_dh2048.derive_ms = (float)res_dh2048.derive_cycles / (CPU_SPEED * 1000.0f);
-  res_dh2048.total_ms = res_dh2048.keygen_ms + res_dh2048.derive_ms;
-  res_dh2048.pubkey_bytes = sizeof(dh2048_p); // 256 bytes
-  res_dh2048.secret_bytes = sizeof(dh2048_p); // 256 bytes
-  res_dh2048.peak_heap_bytes = peak_heap;
+  kpi_dh2048.keygen_cycles = get_average(time_keygen, RUNS_COUNT);
+  kpi_dh2048.derive_cycles = get_average(time_derive, RUNS_COUNT);
+  kpi_dh2048.total_cycles = kpi_dh2048.keygen_cycles + kpi_dh2048.derive_cycles;
+  kpi_dh2048.keygen_ms = (float)kpi_dh2048.keygen_cycles / (CPU_SPEED * 1000.0f);
+  kpi_dh2048.derive_ms = (float)kpi_dh2048.derive_cycles / (CPU_SPEED * 1000.0f);
+  kpi_dh2048.total_ms = kpi_dh2048.keygen_ms + kpi_dh2048.derive_ms;
+  kpi_dh2048.pubkey_bytes = sizeof(dh2048_p);
+  kpi_dh2048.secret_bytes = sizeof(dh2048_p);
+  kpi_dh2048.peak_heap_bytes = peak_heap;
 
-  Serial.printf("    - Keypair Generation       : %9u cycles | %6.2f ms\n", res_dh2048.keygen_cycles, res_dh2048.keygen_ms);
-  Serial.printf("    - Shared Secret Derivation : %9u cycles | %6.2f ms\n", res_dh2048.derive_cycles, res_dh2048.derive_ms);
-  Serial.printf("    - Total Client Crypto Time : %9u cycles | %6.2f ms\n", res_dh2048.total_cycles, res_dh2048.total_ms);
-  Serial.printf("    - Public Key Wire Size     : %u bytes\n", res_dh2048.pubkey_bytes);
-  Serial.printf("    - Shared Secret Output     : %u bytes\n", res_dh2048.secret_bytes);
-  Serial.printf("    - Peak Heap Memory Used    : %u bytes (2048-bit bignum limbs)\n", res_dh2048.peak_heap_bytes);
+  Serial.printf("  KEX-1 Key Generation Latency    : %9u cycles | %6.2f ms\n", kpi_dh2048.keygen_cycles, kpi_dh2048.keygen_ms);
+  Serial.printf("  KEX-2 Public Key Wire Size      : %u bytes\n", kpi_dh2048.pubkey_bytes);
+  Serial.printf("  KEX-3 Secret Derivation Latency : %9u cycles | %6.2f ms\n", kpi_dh2048.derive_cycles, kpi_dh2048.derive_ms);
+  Serial.printf("  KEX-4 Shared Secret Output Size : %u bytes\n", kpi_dh2048.secret_bytes);
+  Serial.printf("  KEX-5 Total Client Compute Time : %9u cycles | %6.2f ms\n", kpi_dh2048.total_cycles, kpi_dh2048.total_ms);
+  Serial.printf("  KEX-6 Peak Dynamic Heap Memory  : %u bytes\n", kpi_dh2048.peak_heap_bytes);
 }
 
-// ----------------------------------------------------
-// Final Comparison Table Summary
-// ----------------------------------------------------
 void print_comparison_table() {
-  Serial.println("\n=========================================================================================");
-  Serial.println("                     FINAL CLASSICAL KEY EXCHANGE COMPARISON TABLE                       ");
-  Serial.println("=========================================================================================");
-  Serial.printf("%-26s | %-16s | %-16s | %-18s\n", "Metric", "X25519", "ECDH P-256", "Classical DH-2048");
-  Serial.println("---------------------------+------------------+------------------+-----------------------");
-  Serial.printf("%-26s | %13.2f ms | %13.2f ms | %15.2f ms\n", "Key Generation Latency", res_x25519.keygen_ms, res_p256.keygen_ms, res_dh2048.keygen_ms);
-  Serial.printf("%-26s | %13.2f ms | %13.2f ms | %15.2f ms\n", "Secret Derivation Latency", res_x25519.derive_ms, res_p256.derive_ms, res_dh2048.derive_ms);
-  Serial.printf("%-26s | %13.2f ms | %13.2f ms | %15.2f ms\n", "Total Client Crypto Time", res_x25519.total_ms, res_p256.total_ms, res_dh2048.total_ms);
-  Serial.printf("%-26s | %13u B  | %13u B  | %15u B \n", "Public Key Wire Size", res_x25519.pubkey_bytes, res_p256.pubkey_bytes, res_dh2048.pubkey_bytes);
-  Serial.printf("%-26s | %13u B  | %13u B  | %15u B \n", "Shared Secret Output", res_x25519.secret_bytes, res_p256.secret_bytes, res_dh2048.secret_bytes);
-  Serial.printf("%-26s | %13u B  | %13u B  | %15u B \n", "Peak Heap RAM Consumed", res_x25519.peak_heap_bytes, res_p256.peak_heap_bytes, res_dh2048.peak_heap_bytes);
-  Serial.println("---------------------------+------------------+------------------+-----------------------");
-  Serial.printf("%-26s | %-16s | %-16s | %-18s\n", "Speedup vs. DH-2048", "2.1x faster", "0.6x (slower)", "Baseline (1.0x)");
-  Serial.printf("%-26s | %-16s | %-16s | %-18s\n", "Wire Size vs. DH-2048", "8.0x smaller", "3.9x smaller", "Baseline (1.0x)");
-  Serial.printf("%-26s | %-16s | %-16s | %-18s\n", "Overall Recommendation", "WINNER (Light)", "Enterprise Only", "Legacy Baseline");
-  Serial.println("=========================================================================================\n");
+  Serial.println("\n========================================================================");
+  Serial.println("                     BENCHMARK RESULTS SUMMARY                          ");
+  Serial.println("========================================================================");
+  Serial.printf("%-6s | %-28s | %-10s | %-10s | %-10s\n", "KPI ID", "Metric", "X25519", "ECDH P-256", "DH-2048");
+  Serial.println("-------+------------------------------+------------+------------+-----------");
+  Serial.printf("%-6s | %-28s | %7.2f ms | %7.2f ms | %7.2f ms\n", "KEX-1", "Key Generation Time", kpi_x25519.keygen_ms, kpi_p256.keygen_ms, kpi_dh2048.keygen_ms);
+  Serial.printf("%-6s | %-28s | %8u B | %8u B | %8u B\n", "KEX-2", "Public Key Wire Size", kpi_x25519.pubkey_bytes, kpi_p256.pubkey_bytes, kpi_dh2048.pubkey_bytes);
+  Serial.printf("%-6s | %-28s | %7.2f ms | %7.2f ms | %7.2f ms\n", "KEX-3", "Secret Derivation Time", kpi_x25519.derive_ms, kpi_p256.derive_ms, kpi_dh2048.derive_ms);
+  Serial.printf("%-6s | %-28s | %8u B | %8u B | %8u B\n", "KEX-4", "Shared Secret Output Size", kpi_x25519.secret_bytes, kpi_p256.secret_bytes, kpi_dh2048.secret_bytes);
+  Serial.printf("%-6s | %-28s | %7.2f ms | %7.2f ms | %7.2f ms\n", "KEX-5", "Total Client Compute Time", kpi_x25519.total_ms, kpi_p256.total_ms, kpi_dh2048.total_ms);
+  Serial.printf("%-6s | %-28s | %8u B | %8u B | %8u B\n", "KEX-6", "Peak Dynamic Heap RAM", kpi_x25519.peak_heap_bytes, kpi_p256.peak_heap_bytes, kpi_dh2048.peak_heap_bytes);
+  Serial.println("========================================================================\n");
 }
 
-// ----------------------------------------------------
-// Main Setup and Loop
-// ----------------------------------------------------
 void setup() {
   Serial.begin(115200);
   delay(2000);
 
   Serial.println("\n========================================================================");
-  Serial.println("            ESP32 CLASSICAL KEY EXCHANGE BENCHMARK (PHASE A)            ");
+  Serial.println("ESP32 Classical Key Exchange Micro-Benchmark (Phase A: Isolated)");
+  Serial.printf("Iterations: %d | CPU Frequency: %d MHz | Initial Free Heap: %u bytes\n", RUNS_COUNT, CPU_SPEED, ESP.getFreeHeap());
   Serial.println("========================================================================");
-  Serial.printf("Device  : ESP32-D0WDQ6 (Xtensa dual-core @ %d MHz)\n", CPU_SPEED);
-  Serial.printf("Tests   : %d iterations per algorithm (Arithmetic Mean)\n", RUNS_COUNT);
-  Serial.printf("Target  : 128-bit Classical Security Baseline\n");
-  Serial.printf("Heap    : %u bytes free at start\n", ESP.getFreeHeap());
-  Serial.println("------------------------------------------------------------------------");
 
   if (sodium_init() < 0) {
-    Serial.println("[FATAL] Libsodium failed to initialize!");
+    Serial.println("Error: sodium_init() failed");
     return;
   }
 
@@ -340,9 +306,6 @@ void setup() {
   test_classical_dh2048();
 
   print_comparison_table();
-
-  Serial.printf("Free Heap at Finish : %u bytes\n", ESP.getFreeHeap());
-  Serial.println("Benchmark completed successfully! You can copy the table above into your report.");
 }
 
 void loop() {
