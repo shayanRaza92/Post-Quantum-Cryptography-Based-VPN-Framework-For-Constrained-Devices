@@ -124,38 +124,41 @@ void test_ecdh_p256() {
   mbedtls_ctr_drbg_init(&random_gen);
   mbedtls_ctr_drbg_seed(&random_gen, mbedtls_entropy_func, &entropy, (const unsigned char *)"ecdh", 4);
 
+  // Load standard NIST P-256 curve group
+  mbedtls_ecp_group grp;
+  mbedtls_ecp_group_init(&grp);
+  mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP256R1);
+
   // Make a peer key to use for shared secret calculation
-  mbedtls_ecdh_context peer_key;
-  mbedtls_ecdh_init(&peer_key);
-  mbedtls_ecdh_setup(&peer_key, MBEDTLS_ECP_DP_SECP256R1);
-  uint8_t peer_pk[65];
-  size_t peer_pk_len = 0;
-  mbedtls_ecdh_make_public(&peer_key, &peer_pk_len, peer_pk, sizeof(peer_pk), mbedtls_ctr_drbg_random, &random_gen);
+  mbedtls_mpi peer_d;
+  mbedtls_ecp_point peer_Q;
+  mbedtls_mpi_init(&peer_d);
+  mbedtls_ecp_point_init(&peer_Q);
+  mbedtls_ecdh_gen_public(&grp, &peer_d, &peer_Q, mbedtls_ctr_drbg_random, &random_gen);
 
   uint32_t memory_start = ESP.getFreeHeap();
-  size_t pubkey_len = 0;
-  size_t secret_len = 0;
 
   for (int i = 0; i < RUNS_COUNT; i++) {
-    mbedtls_ecdh_context client_key;
-    mbedtls_ecdh_init(&client_key);
-    mbedtls_ecdh_setup(&client_key, MBEDTLS_ECP_DP_SECP256R1);
-
-    uint8_t client_pk[65];
+    mbedtls_mpi client_d;
+    mbedtls_ecp_point client_Q;
+    mbedtls_mpi_init(&client_d);
+    mbedtls_ecp_point_init(&client_Q);
 
     // 1. Create keys
     uint32_t start = get_cycles();
-    mbedtls_ecdh_make_public(&client_key, &pubkey_len, client_pk, sizeof(client_pk), mbedtls_ctr_drbg_random, &random_gen);
+    mbedtls_ecdh_gen_public(&grp, &client_d, &client_Q, mbedtls_ctr_drbg_random, &random_gen);
     time_keygen[i] = get_cycles() - start;
 
     // 2. Compute shared secret
-    mbedtls_ecdh_read_public(&client_key, peer_pk, peer_pk_len);
-    uint8_t secret[32];
+    mbedtls_mpi z;
+    mbedtls_mpi_init(&z);
     start = get_cycles();
-    mbedtls_ecdh_calc_secret(&client_key, &secret_len, secret, sizeof(secret), mbedtls_ctr_drbg_random, &random_gen);
+    mbedtls_ecdh_compute_shared(&grp, &z, &peer_Q, &client_d, mbedtls_ctr_drbg_random, &random_gen);
     time_derive[i] = get_cycles() - start;
 
-    mbedtls_ecdh_free(&client_key);
+    mbedtls_mpi_free(&client_d);
+    mbedtls_ecp_point_free(&client_Q);
+    mbedtls_mpi_free(&z);
 
     if (i % 25 == 0) vTaskDelay(1);
   }
@@ -174,11 +177,13 @@ void test_ecdh_p256() {
   print_result("Total Client Crypto Time", total_cycles, RUNS_COUNT);
 
   Serial.println("");
-  Serial.printf("  Public Key Size       : %d bytes (uncompressed)\n", (int)pubkey_len);
-  Serial.printf("  Shared Secret Size    : %d bytes\n", (int)secret_len);
+  Serial.printf("  Public Key Size       : 65 bytes (uncompressed point)\n");
+  Serial.printf("  Shared Secret Size    : 32 bytes\n");
 
   // Clean up
-  mbedtls_ecdh_free(&peer_key);
+  mbedtls_mpi_free(&peer_d);
+  mbedtls_ecp_point_free(&peer_Q);
+  mbedtls_ecp_group_free(&grp);
   mbedtls_ctr_drbg_free(&random_gen);
   mbedtls_entropy_free(&entropy);
 }
