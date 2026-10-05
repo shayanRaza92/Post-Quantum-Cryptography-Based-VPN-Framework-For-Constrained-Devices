@@ -6,7 +6,6 @@
 // Built-in ESP32 cryptography libraries (mbedTLS)
 #include "mbedtls/ecdh.h"
 #include "mbedtls/ecp.h"
-#include "mbedtls/dhm.h"
 #include "mbedtls/bignum.h"
 #include "mbedtls/entropy.h"
 #include "mbedtls/ctr_drbg.h"
@@ -14,6 +13,26 @@
 // Setup how many times to run each test
 #define RUNS_COUNT     100  // Runs 100 times for all algorithms
 #define CPU_SPEED      240  // ESP32 runs at 240 MHz
+
+// RFC 3526 2048-bit MODP Prime
+static const unsigned char dh2048_p[256] = {
+  0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xC9,0x0F,0xDA,0xA2,0x21,0x68,0xC2,0x34,
+  0xC4,0xC6,0x62,0x8B,0x80,0xDC,0x1C,0xD1,0x29,0x02,0x4E,0x08,0x8A,0x67,0xCC,0x74,
+  0x02,0x0B,0xBE,0xA6,0x3B,0x13,0x9B,0x22,0x51,0x4A,0x08,0x79,0x8E,0x34,0x04,0xDD,
+  0xEF,0x95,0x19,0xB3,0xCD,0x3A,0x43,0x1B,0x30,0x2B,0x0A,0x6D,0xF2,0x5F,0x14,0x37,
+  0x4F,0xE1,0x35,0x6D,0x6D,0x51,0xC2,0x45,0xE4,0x85,0xB5,0x76,0x62,0x5E,0x7E,0xC6,
+  0xF4,0x4C,0x42,0xE9,0xA6,0x37,0xED,0x6B,0x0B,0xFF,0x5C,0xB6,0xF4,0x06,0xB7,0xED,
+  0xEE,0x38,0x6B,0xFB,0x5A,0x89,0x9F,0xA5,0xAE,0x9F,0x24,0x11,0x7C,0x4B,0x1F,0xE6,
+  0x49,0x28,0x66,0x51,0xEC,0xE4,0x5B,0x3D,0xC2,0x00,0x7C,0xB8,0xA1,0x63,0xBF,0x05,
+  0x98,0xDA,0x48,0x36,0x1C,0x55,0xD3,0x9A,0x69,0x16,0x3F,0xA8,0xFD,0x24,0xCF,0x5F,
+  0x83,0x65,0x5D,0x23,0xDC,0xA3,0xAD,0x96,0x1C,0x62,0xF3,0x56,0x20,0x85,0x52,0xBB,
+  0x9E,0xD5,0x29,0x07,0x70,0x96,0x96,0x6D,0x67,0x0C,0x35,0x4E,0x4A,0xBC,0x98,0x04,
+  0xF1,0x74,0x6C,0x08,0xCA,0x18,0x21,0x7C,0x32,0x90,0x5E,0x46,0x2E,0x36,0xCE,0x3B,
+  0xE3,0x9E,0x77,0x2C,0x18,0x0E,0x86,0x03,0x9B,0x27,0x83,0xA2,0xEC,0x07,0xA2,0x8F,
+  0xB5,0xC5,0x5D,0xF0,0x6F,0x4C,0x52,0xC9,0xDE,0x2B,0xCB,0xF6,0x95,0x58,0x17,0x18,
+  0x39,0x95,0x49,0x7C,0xEA,0x95,0x6A,0xE5,0x15,0xD2,0x26,0x18,0x98,0xFA,0x05,0x10,
+  0x15,0x72,0x8E,0x5A,0x8A,0xAC,0xAA,0x68,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF
+};
 
 // Helper: Get exact CPU cycles
 static inline uint32_t get_cycles() {
@@ -180,46 +199,42 @@ void test_classical_dh2048() {
   mbedtls_ctr_drbg_init(&random_gen);
   mbedtls_ctr_drbg_seed(&random_gen, mbedtls_entropy_func, &entropy, (const unsigned char *)"dh2048", 6);
 
-  // Load standard 2048-bit prime and generator (g = 2)
-  const unsigned char p_bin[] = MBEDTLS_DHM_RFC3526_MODP_2048_P_BIN;
-  const unsigned char g_bin[] = MBEDTLS_DHM_RFC3526_MODP_2048_G_BIN;
-
-  mbedtls_mpi P, G;
+  // Setup DH parameters: P (2048-bit prime) and G (generator 2)
+  mbedtls_mpi P, G, peer_X, peer_Y;
   mbedtls_mpi_init(&P);
   mbedtls_mpi_init(&G);
-  mbedtls_mpi_read_binary(&P, p_bin, sizeof(p_bin));
-  mbedtls_mpi_read_binary(&G, g_bin, sizeof(g_bin));
+  mbedtls_mpi_init(&peer_X);
+  mbedtls_mpi_init(&peer_Y);
 
-  // Make a peer key to use for shared secret calculation
-  mbedtls_dhm_context peer_key;
-  mbedtls_dhm_init(&peer_key);
-  mbedtls_dhm_set_group(&peer_key, &P, &G);
-  uint8_t peer_pub[sizeof(p_bin)];
-  mbedtls_dhm_make_public(&peer_key, sizeof(p_bin), peer_pub, sizeof(peer_pub), mbedtls_ctr_drbg_random, &random_gen);
+  mbedtls_mpi_read_binary(&P, dh2048_p, sizeof(dh2048_p));
+  mbedtls_mpi_lset(&G, 2);
+
+  // Pre-generate peer's public key: peer_Y = G^peer_X mod P
+  mbedtls_mpi_fill_random(&peer_X, 32, mbedtls_ctr_drbg_random, &random_gen);
+  mbedtls_mpi_exp_mod(&peer_Y, &G, &peer_X, &P, NULL);
 
   uint32_t memory_start = ESP.getFreeHeap();
-  size_t secret_len = 0;
 
   for (int i = 0; i < RUNS_COUNT; i++) {
-    mbedtls_dhm_context client_key;
-    mbedtls_dhm_init(&client_key);
-    mbedtls_dhm_set_group(&client_key, &P, &G);
+    mbedtls_mpi client_X, client_Y, shared_K;
+    mbedtls_mpi_init(&client_X);
+    mbedtls_mpi_init(&client_Y);
+    mbedtls_mpi_init(&shared_K);
 
-    uint8_t client_pub[sizeof(p_bin)];
-
-    // 1. Create keys
+    // 1. Create keys: client_Y = G^client_X mod P
     uint32_t start = get_cycles();
-    mbedtls_dhm_make_public(&client_key, sizeof(p_bin), client_pub, sizeof(client_pub), mbedtls_ctr_drbg_random, &random_gen);
+    mbedtls_mpi_fill_random(&client_X, 32, mbedtls_ctr_drbg_random, &random_gen);
+    mbedtls_mpi_exp_mod(&client_Y, &G, &client_X, &P, NULL);
     time_keygen[i] = get_cycles() - start;
 
-    // 2. Compute shared secret
-    mbedtls_dhm_read_public(&client_key, peer_pub, sizeof(peer_pub));
-    uint8_t secret[sizeof(p_bin)];
+    // 2. Compute shared secret: shared_K = peer_Y^client_X mod P
     start = get_cycles();
-    mbedtls_dhm_calc_secret(&client_key, secret, sizeof(secret), &secret_len, mbedtls_ctr_drbg_random, &random_gen);
+    mbedtls_mpi_exp_mod(&shared_K, &peer_Y, &client_X, &P, NULL);
     time_derive[i] = get_cycles() - start;
 
-    mbedtls_dhm_free(&client_key);
+    mbedtls_mpi_free(&client_X);
+    mbedtls_mpi_free(&client_Y);
+    mbedtls_mpi_free(&shared_K);
 
     if (i % 10 == 0) vTaskDelay(1);
   }
@@ -238,11 +253,12 @@ void test_classical_dh2048() {
   print_result("Total Client Crypto Time", total_cycles, RUNS_COUNT);
 
   Serial.println("");
-  Serial.printf("  Public Key Size       : %d bytes\n", (int)sizeof(p_bin));
-  Serial.printf("  Shared Secret Size    : %d bytes\n", (int)secret_len);
+  Serial.printf("  Public Key Size       : %d bytes\n", (int)sizeof(dh2048_p));
+  Serial.printf("  Shared Secret Size    : %d bytes\n", (int)sizeof(dh2048_p));
 
   // Clean up
-  mbedtls_dhm_free(&peer_key);
+  mbedtls_mpi_free(&peer_X);
+  mbedtls_mpi_free(&peer_Y);
   mbedtls_mpi_free(&P);
   mbedtls_mpi_free(&G);
   mbedtls_ctr_drbg_free(&random_gen);
