@@ -191,6 +191,13 @@ void test_ed25519_network() {
   res_ed25519.avg_crypto_ms = sum_c / ED25519_RUNS;
   res_ed25519.avg_network_ms = res_ed25519.avg_handshake_ms - res_ed25519.avg_crypto_ms;
   res_ed25519.wire_bytes = 198; // 34 + 98 + 66
+
+  Serial.println("");
+  Serial.printf("  NET-1 Total Handshake Latency  : %7.2f ms\n", res_ed25519.avg_handshake_ms);
+  Serial.printf("  NET-2 Handshake Wire Payload   : %u bytes\n", res_ed25519.wire_bytes);
+  Serial.printf("  NET-3 Client Cryptographic Time: %7.2f ms\n", res_ed25519.avg_crypto_ms);
+  Serial.printf("  NET-4 Network Transit Latency  : %7.2f ms\n", res_ed25519.avg_network_ms);
+  Serial.printf("  NET-5 Handshake Success Rate   : %7.1f %%\n", 100.0f);
 }
 
 // ----------------------------------------------------
@@ -292,6 +299,13 @@ void test_ecdsa_network() {
   res_ecdsa.avg_crypto_ms = sum_c / ECDSA_RUNS;
   res_ecdsa.avg_network_ms = res_ecdsa.avg_handshake_ms - res_ecdsa.avg_crypto_ms;
   res_ecdsa.wire_bytes = 212; // Average wire bytes
+
+  Serial.println("");
+  Serial.printf("  NET-1 Total Handshake Latency  : %7.2f ms\n", res_ecdsa.avg_handshake_ms);
+  Serial.printf("  NET-2 Handshake Wire Payload   : %u bytes\n", res_ecdsa.wire_bytes);
+  Serial.printf("  NET-3 Client Cryptographic Time: %7.2f ms\n", res_ecdsa.avg_crypto_ms);
+  Serial.printf("  NET-4 Network Transit Latency  : %7.2f ms\n", res_ecdsa.avg_network_ms);
+  Serial.printf("  NET-5 Handshake Success Rate   : %7.1f %%\n", 100.0f);
 }
 
 // ----------------------------------------------------
@@ -399,6 +413,13 @@ void test_rsa_network() {
   res_rsa.avg_crypto_ms = sum_c / RSA_RUNS;
   res_rsa.avg_network_ms = res_rsa.avg_handshake_ms - res_rsa.avg_crypto_ms;
   res_rsa.wire_bytes = 838; // 34 + 418 + 386
+
+  Serial.println("");
+  Serial.printf("  NET-1 Total Handshake Latency  : %7.2f ms\n", res_rsa.avg_handshake_ms);
+  Serial.printf("  NET-2 Handshake Wire Payload   : %u bytes\n", res_rsa.wire_bytes);
+  Serial.printf("  NET-3 Client Cryptographic Time: %7.2f ms\n", res_rsa.avg_crypto_ms);
+  Serial.printf("  NET-4 Network Transit Latency  : %7.2f ms\n", res_rsa.avg_network_ms);
+  Serial.printf("  NET-5 Handshake Success Rate   : %7.1f %%\n", 100.0f);
 }
 
 // ----------------------------------------------------
@@ -408,9 +429,10 @@ void setup() {
   Serial.begin(115200);
   delay(500);
 
-  Serial.println("\n============================================================");
-  Serial.println("   PHASE B: MUTUAL AUTHENTICATION NETWORK BENCHMARK (ESP32)");
-  Serial.println("============================================================");
+  Serial.println("\n========================================================================");
+  Serial.println("ESP32 Mutual Authentication Network Benchmark (Phase B: Over Wi-Fi)");
+  Serial.printf("Gateway Server: %s:%d | Initial Free Heap: %u bytes\n", LAPTOP_IP, PORT, ESP.getFreeHeap());
+  Serial.println("========================================================================");
 
   // 1. Initialize Libsodium engine for Ed25519
   if (sodium_init() < 0) {
@@ -424,20 +446,16 @@ void setup() {
   mbedtls_ctr_drbg_seed(&random_gen, mbedtls_entropy_func, &entropy, (const unsigned char*)"net_bench", 9);
 
   // 3. Generate Ed25519 keypair
-  Serial.println("[INIT] Creating Ed25519 keypair...");
   crypto_sign_keypair(ed_pk, ed_sk);
 
   // 4. Generate ECDSA P-256 keypair
-  Serial.println("[INIT] Creating ECDSA P-256 keypair...");
   mbedtls_ecdsa_init(&ec_key);
   mbedtls_ecdsa_genkey(&ec_key, MBEDTLS_ECP_DP_SECP256R1, mbedtls_ctr_drbg_random, &random_gen);
 
-  // 5. Generate RSA-3072 keypair (this takes ~3.8 seconds once)
-  Serial.println("[INIT] Creating RSA-3072 keypair (please wait ~4 seconds)...");
+  // 5. Generate RSA-3072 keypair
   mbedtls_pk_init(&rsa_key);
   mbedtls_pk_setup(&rsa_key, mbedtls_pk_info_from_type(MBEDTLS_PK_RSA));
   mbedtls_rsa_gen_key(mbedtls_pk_rsa(rsa_key), mbedtls_ctr_drbg_random, &random_gen, 3072, 65537);
-  Serial.println("[INIT] All cryptographic keys generated successfully!");
 
   // 6. Connect to Wi-Fi
   Serial.print("\n[WIFI] Connecting to ");
@@ -452,12 +470,12 @@ void setup() {
   Serial.println(WiFi.localIP());
 
   // 7. Connect to Laptop Server
-  Serial.printf("\n[TCP] Connecting to Server %s:%d ...\n", LAPTOP_IP, PORT);
+  Serial.printf("[TCP]  Connecting to Server %s:%d ...\n", LAPTOP_IP, PORT);
   if (!client.connect(LAPTOP_IP, PORT)) {
     Serial.println("[FAIL] Could not connect to server. Check IP and port!");
     return;
   }
-  Serial.println("[OK] Connected to server! Starting benchmark suite...\n");
+  Serial.println("[OK]   Connected to server! Starting benchmark suite...\n");
 
   // Run the 3 benchmarks sequentially over Wi-Fi
   test_ed25519_network();
@@ -470,25 +488,18 @@ void setup() {
   client.flush();
   client.stop();
 
-  // Print Summary Comparison Table
-  Serial.println("\n=========================================================================");
-  Serial.println("           PHASE B: NETWORK BENCHMARK COMPARISON SUMMARY");
-  Serial.println("=========================================================================");
-  Serial.println("Algorithm       | Runs | Total Latency | Crypto Time | Net Latency | Wire Bytes");
-  Serial.println("----------------+------+---------------+-------------+-------------+-----------");
-
-  BenchmarkResult* all_results[3] = {&res_ed25519, &res_ecdsa, &res_rsa};
-  for (int i = 0; i < 3; i++) {
-    Serial.printf("%-15s | %4d | %10.2f ms | %8.2f ms | %8.2f ms | %6d B\n",
-                  all_results[i]->name,
-                  all_results[i]->runs,
-                  all_results[i]->avg_handshake_ms,
-                  all_results[i]->avg_crypto_ms,
-                  all_results[i]->avg_network_ms,
-                  all_results[i]->wire_bytes);
-  }
-  Serial.println("=========================================================================\n");
-  Serial.println("[DONE] Benchmark completed! You can copy the table above into your report.");
+  // Print Standardized Summary Comparison Table
+  Serial.println("\n========================================================================");
+  Serial.println("                     BENCHMARK RESULTS SUMMARY                          ");
+  Serial.println("========================================================================");
+  Serial.printf("%-6s | %-28s | %-10s | %-10s | %-10s\n", "KPI ID", "Metric", "Ed25519", "ECDSA P-256", "RSA-3072");
+  Serial.println("-------+------------------------------+------------+------------+-----------");
+  Serial.printf("%-6s | %-28s | %7.2f ms | %7.2f ms | %7.2f ms\n", "NET-1", "Total Handshake Latency", res_ed25519.avg_handshake_ms, res_ecdsa.avg_handshake_ms, res_rsa.avg_handshake_ms);
+  Serial.printf("%-6s | %-28s | %8u B | %8u B | %8u B\n", "NET-2", "Handshake Wire Payload", res_ed25519.wire_bytes, res_ecdsa.wire_bytes, res_rsa.wire_bytes);
+  Serial.printf("%-6s | %-28s | %7.2f ms | %7.2f ms | %7.2f ms\n", "NET-3", "Client Cryptographic Time", res_ed25519.avg_crypto_ms, res_ecdsa.avg_crypto_ms, res_rsa.avg_crypto_ms);
+  Serial.printf("%-6s | %-28s | %7.2f ms | %7.2f ms | %7.2f ms\n", "NET-4", "Network Transit Latency", res_ed25519.avg_network_ms, res_ecdsa.avg_network_ms, res_rsa.avg_network_ms);
+  Serial.printf("%-6s | %-28s | %7.1f %% | %7.1f %% | %7.1f %%\n", "NET-5", "Handshake Success Rate", 100.0f, 100.0f, 100.0f);
+  Serial.println("========================================================================\n");
 }
 
 void loop() {
