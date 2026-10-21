@@ -14,6 +14,9 @@ private:
   // Helper method: Blocks until exact number of bytes arrive or timeout expires
   bool readExact(uint8_t* buffer, size_t count, unsigned long timeoutMs = 7000);
 
+  // Helper method: Constructs domain-separated SHA-256 transcript hash
+  void buildTranscriptHash(const char* role, const uint8_t* serverNonce, const uint8_t* clientNonce, uint8_t* outDigest);
+
 public:
   // Constructor: Takes network client, identity instance, and pinned gateway public key
   AuthManager(WiFiClient& client, const DeviceIdentity& identity, const uint8_t* trustedGatewayKey);

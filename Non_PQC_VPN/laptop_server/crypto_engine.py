@@ -59,14 +59,48 @@ class GatewayCrypto:
     def generate_challenge(self):  # Generates 32 fresh random bytes for a challenge nonce
         return os.urandom(CHALLENGE_NONCE_LENGTH)  # True random bytes from operating system
 
-    def sign_challenge(self, nonce_bytes):  # Signs a client challenge nonce using server's private key
-        return self._private_key.sign(nonce_bytes)  # Returns 64-byte Ed25519 signature
+    @staticmethod
+    def build_transcript_hash(role: str, device_id: str, server_nonce: bytes, client_nonce: bytes) -> bytes:
+        """
+        Constructs a domain-separated cryptographic transcript hash (SHA-256).
+        Format: "VPN-AUTH-v1|" + role + "|" + device_id + "|" + server_nonce + "|" + client_nonce
+        Prevents blind signing, relay attacks, and cross-protocol replay.
+        """
+        import hashlib
+        hasher = hashlib.sha256()
+        hasher.update(b"VPN-AUTH-v1|")
+        hasher.update(role.encode("utf-8"))
+        hasher.update(b"|")
+        hasher.update(device_id.encode("utf-8"))
+        hasher.update(b"|")
+        hasher.update(server_nonce)
+        hasher.update(b"|")
+        hasher.update(client_nonce)
+        return hasher.digest()
 
-    def verify_client_signature(self, client_public_bytes, signature_bytes, challenge_nonce):
-        """Verifies that the client signature was created by the owner of client_public_bytes."""
+    def sign_transcript(self, role: str, device_id: str, server_nonce: bytes, client_nonce: bytes) -> bytes:
+        """Signs the domain-separated transcript hash for this session using server's private key."""
+        digest = self.build_transcript_hash(role, device_id, server_nonce, client_nonce)
+        return self._private_key.sign(digest)
+
+    def verify_client_transcript(self, client_public_bytes: bytes, signature_bytes: bytes, device_id: str, server_nonce: bytes, client_nonce: bytes) -> bool:
+        """Verifies that the client's signature matches the domain-separated transcript hash."""
+        digest = self.build_transcript_hash("CLIENT", device_id, server_nonce, client_nonce)
         try:
             client_pubkey_obj = ed25519.Ed25519PublicKey.from_public_bytes(client_public_bytes)
-            client_pubkey_obj.verify(signature_bytes, challenge_nonce)  # Verify signature mathematically
-            return True   # Math verified: client holds the real private key
+            client_pubkey_obj.verify(signature_bytes, digest)
+            return True
         except Exception:
-            return False  # Math failed: invalid signature or wrong key
+            return False
+
+    def sign_challenge(self, nonce_bytes):  # Legacy fallback: signs raw nonce
+        return self._private_key.sign(nonce_bytes)
+
+    def verify_client_signature(self, client_public_bytes, signature_bytes, challenge_nonce):
+        """Legacy fallback: verifies signature over raw nonce."""
+        try:
+            client_pubkey_obj = ed25519.Ed25519PublicKey.from_public_bytes(client_public_bytes)
+            client_pubkey_obj.verify(signature_bytes, challenge_nonce)
+            return True
+        except Exception:
+            return False

@@ -9,7 +9,7 @@ HANDSHAKE_TIMEOUT = 10.0  # Seconds allowed for an incoming client to complete t
 DEVICE_ID_LENGTH = 16        # ESP32 sends a 16-byte fixed-width name string (e.g. "esp32-01")
 CHALLENGE_NONCE_LENGTH = 32  # 32-byte fresh random challenge number
 SIGNATURE_LENGTH = 64        # Ed25519 digital signatures are always exactly 64 bytes long
-AUTH_CONFIRMATION_TOKEN = b"AUTH_OK"  # 7-byte confirmation sent by ESP32 after verifying server proof
+CONFIRMATION_TAG_LENGTH = 32  # 32-byte SHA-256 confirmation tag sent by client after verifying server proof
 
 # --- Path to Allowlist File ---
 ALLOWLIST_FILE = Path(__file__).parent / "authorized_devices.json"  # File with approved ESP32 public keys

@@ -48,8 +48,6 @@ void setup() {
     while (true) delay(1000); // Halt here if crypto library fails to initialize
   }
 
-  identity.begin(); // Load key from NVS flash or generate new key via TRNG on first boot
-
   Serial.print("[WIFI] Connecting to ");
   Serial.println(WIFI_SSID);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD); // Start connecting to Wi-Fi network
@@ -62,6 +60,10 @@ void setup() {
   Serial.println("\n[WIFI] Connected.");
   Serial.print  ("ESP32 IP : ");
   Serial.println(WiFi.localIP()); // Print the IP address assigned by your Wi-Fi router
+
+  // Initialize identity AFTER Wi-Fi is active.
+  // Per Espressif TRM, the ESP32 hardware TRNG requires active RF circuitry for true cryptographic entropy.
+  identity.begin();
 
   connectToGatewayServer(); // Connect to laptop server and execute mutual authentication
 }

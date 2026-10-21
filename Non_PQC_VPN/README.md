@@ -1,68 +1,69 @@
-# Non-PQC VPN Baseline
+# Classical IoT VPN (ESP32 to Gateway)
 
-This folder has the classical (non-quantum) VPN implementation between an ESP32 and a laptop gateway, along with our benchmark results.
-
----
-
-## Folder Structure
-
-* `esp32_client/`: Arduino C++ code for the ESP32 board (`DeviceIdentity`, `AuthManager`, `config.h`, and `esp32_client.ino`).
-* `laptop_server/`: Python gateway server (`server.py`, `tunnel_session.py`, `crypto_engine.py`, `config.py`, and `authorized_devices.json`).
-* `benchmarking/`: All raw test data, plots, and PDF reports for mutual authentication and key exchange algorithms.
-* `sequence_diagram.png`: Visual handshake diagram showing how the ESP32 and gateway authenticate each other.
+A lightweight mutual authentication and secure communication tunnel between an ESP32 microcontroller and a Python gateway server using Ed25519 digital signatures and SHA-256 session transcript binding.
 
 ---
 
-## How It Works
+## Directory Overview
+
+* **`esp32_client/`**: ESP32 C++ firmware for Arduino IDE (`esp32_client.ino`, `AuthManager`, `DeviceIdentity`, `config.h`).
+* **`laptop_server/`**: Python gateway server (`server.py`, `tunnel_session.py`, `crypto_engine.py`, `authorized_devices.json`).
+* **`sequence_diagram.png`**: Protocol flow diagram showing the mutual authentication exchange.
+* **`benchmarking/`**: Standalone microcontroller benchmarks and analysis reports for classical cryptography.
+
+---
+
+## Protocol Handshake Flow
 
 ![Handshake Sequence Diagram](sequence_diagram.png)
 
-1. **TCP Connection**: The ESP32 connects to the laptop server over local Wi-Fi on port 9000.
-2. **Device Allowlist Check**: The ESP32 sends its device ID (`esp32-01`). The server checks `authorized_devices.json`. If the device is not registered, the server drops the connection immediately.
-3. **Mutual Authentication (Ed25519)**:
-   - The server sends a random 32-byte challenge nonce to the ESP32.
-   - The ESP32 signs this nonce with its private key (stored in NVS flash) and generates its own random challenge nonce, sending both back (96 bytes total).
-   - The server verifies the ESP32 signature using the pre-registered public key from the allowlist. Then, the server signs the ESP32 challenge with its own private key and sends it back (64 bytes).
-   - The ESP32 verifies the server's signature using the hardcoded server public key in `config.h`.
-4. **Handshake Confirmation**: Once the ESP32 verifies the server, it sends `AUTH_OK`. Only then does the server mark the tunnel as established.
-5. **Data Tunnel**: Both sides now safely exchange encrypted tunnel packets and periodic heartbeat pings.
+1. **TCP Connection**: The ESP32 connects to the gateway over Wi-Fi on TCP port 9000.
+2. **Device Authorization**: The ESP32 sends its 16-byte Device ID (`esp32-01`). The server validates the ID against `authorized_devices.json` and drops unauthorized devices.
+3. **Mutual Challenge-Response**:
+   * The server sends a fresh 32-byte random challenge nonce.
+   * The ESP32 samples 32 bytes of physical entropy from its hardware TRNG (`esp_fill_random`).
+   * Both sides construct a session transcript:
+     `SHA-256("VPN-AUTH-v1|" + Role + "|" + DeviceID + "|" + ServerNonce + "|" + ClientNonce)`
+   * **Client Authentication**: The ESP32 signs the transcript (`Role = "CLIENT"`) with its Ed25519 private key and sends the 64-byte signature with its nonce. The server verifies the signature using the pre-registered public key.
+   * **Server Authentication**: The gateway signs the transcript (`Role = "SERVER"`) and sends its 64-byte signature back. The ESP32 verifies it using the pinned gateway public key.
+4. **Cryptographic Confirmation**: The ESP32 sends a 32-byte confirmation tag (`SHA-256("VPN-AUTH-v1|CONFIRM|...")`). The server verifies this digest before transitioning the session to the active tunnel state.
+5. **Active Tunnel**: The client and server begin bidirectional data exchange and periodic status pings.
 
 ---
 
-## Benchmark Highlights
+## Quickstart Guide
 
-We tested these algorithms on real ESP32 hardware (Xtensa dual-core @ 240 MHz):
-
-* **Mutual Authentication (`benchmarking/mutual_auth_benchmark/`)**:
-  * **Ed25519**: ~22 ms signing time, 64-byte signature. Best speed and smallest memory usage on ESP32. (Selected algorithm)
-  * **ECDSA P-256**: ~48 ms signing time, 70–72 byte DER signature.
-  * **RSA-3072**: ~1850 ms signing time, 384-byte signature. Far too heavy and slow for microcontrollers.
-
-* **Key Exchange (`benchmarking/key_exchange_benchmark/`)**:
-  * **X25519**: Fast Curve25519 scalar multiplication with compact 32-byte keys. (Selected algorithm)
-  * **ECDH P-256**: Standard NIST curve, 64-byte keys.
-  * **DH-2048**: Classic Diffie-Hellman, 256-byte keys. Much slower on embedded hardware.
-
----
-
-## How to Run
-
-### 1. Start the Laptop Server
+### 1. Start the Server (Laptop)
 
 ```bash
 cd laptop_server
 python3 server.py
 ```
-The server will detect your local IP address and start listening on port 9000.
+The server will print its local IP address, public key, and listen for incoming connections on port 9000.
 
-### 2. Flash the ESP32
+### 2. Configure and Flash the Client (ESP32)
 
-1. Open `esp32_client/config.h` and put your Wi-Fi name, password, and the laptop's IP address:
+1. Open `esp32_client/config.h` and verify your network settings:
    ```cpp
-   #define WIFI_SSID     "Your_WiFi_Name"
-   #define WIFI_PASSWORD "Your_WiFi_Password"
-   #define VPN_SERVER_IP "192.168.1.X"   // Put your laptop IP here
-   #define VPN_SERVER_PORT 9000
+   const char* const WIFI_SSID     = "Your_WiFi_SSID";
+   const char* const WIFI_PASSWORD = "Your_WiFi_Password";
+   const char* const GATEWAY_IP    = "10.202.171.216"; // IP address printed by server.py
+   const uint16_t    GATEWAY_PORT  = 9000;
    ```
-2. Open `esp32_client/esp32_client.ino` in Arduino IDE, select your ESP32 board, and upload.
-3. Open the Serial Monitor at **115200 baud** to see the handshake complete.
+2. Open `esp32_client/esp32_client.ino` in Arduino IDE.
+3. Select your ESP32 board and COM port, then click **Upload**.
+4. Open the Serial Monitor at **115200 baud** to monitor the connection and authentication.
+
+---
+
+## Performance Summary (ESP32 @ 240 MHz)
+
+Cryptographic operations benchmarked directly on the ESP32 (Xtensa LX6 @ 240 MHz):
+
+| Metric | Ed25519 (Selected) | ECDSA P-256 | RSA-3072 |
+| :--- | :---: | :---: | :---: |
+| **Sign Latency** | **9.42 ms** | 158.58 ms | 375.81 ms |
+| **Verify Latency** | 19.80 ms | 313.88 ms | **1.71 ms** |
+| **Total Handshake Crypto** | **29.22 ms** | 472.46 ms | 377.52 ms |
+| **Signature Wire Size** | **64 bytes** | 71 bytes | 384 bytes |
+| **Peak Heap Overhead** | **108 bytes** | 300 bytes | 2,068 bytes |

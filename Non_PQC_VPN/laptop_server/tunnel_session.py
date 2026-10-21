@@ -3,7 +3,7 @@ from config import (
     DEVICE_ID_LENGTH,        # 16-byte fixed buffer size for device identifier
     CHALLENGE_NONCE_LENGTH,  # 32-byte fresh random challenge number
     SIGNATURE_LENGTH,        # 64-byte Ed25519 digital signature length
-    AUTH_CONFIRMATION_TOKEN, # 7-byte confirmation token ("AUTH_OK") sent by ESP32
+    CONFIRMATION_TAG_LENGTH, # 32-byte SHA-256 confirmation tag sent by ESP32
     HANDSHAKE_TIMEOUT        # 10.0 seconds allowed to finish the handshake
 )
 
@@ -71,32 +71,45 @@ class VpnSession:
         esp32_signature = client_response[:SIGNATURE_LENGTH]        # First 64 bytes are client signature
         esp32_challenge_nonce = client_response[SIGNATURE_LENGTH:]  # Remaining 32 bytes are client challenge
 
-        # Verify client's signature against the public key registered in the allowlist
-        is_valid = self.crypto.verify_client_signature(
+        # Verify client's signature against the domain-separated transcript hash
+        is_valid = self.crypto.verify_client_transcript(
             registered_pubkey_bytes,
             esp32_signature,
-            server_challenge_nonce
+            device_id,
+            server_challenge_nonce,
+            esp32_challenge_nonce
         )
 
         if not is_valid:
-            print(f"[{device_id}] [AUTHENTICATION] Client signature INVALID.")
+            print(f"[{device_id}] [AUTHENTICATION] Client signature INVALID (transcript mismatch or bad key).")
             return False, None  # Signature verification failed; drop connection
 
-        print(f"[{device_id}] [AUTHENTICATION] Client signature VALID.")
+        print(f"[{device_id}] [AUTHENTICATION] Client signature VALID (bound to session transcript).")
 
-        # Sign the ESP32's challenge nonce to prove server's own identity
-        server_signature = self.crypto.sign_challenge(esp32_challenge_nonce)
+        # Sign the session transcript as SERVER to prove server identity to client
+        server_signature = self.crypto.sign_transcript(
+            "SERVER",
+            device_id,
+            server_challenge_nonce,
+            esp32_challenge_nonce
+        )
         self.connection.sendall(server_signature)  # Send 64-byte server proof back to ESP32
-        print(f"[{device_id}] [AUTHENTICATION] Server proof sent. Waiting for client confirmation...")
+        print(f"[{device_id}] [AUTHENTICATION] Server transcript proof sent. Waiting for client confirmation...")
 
         # --- STAGE 3: Client Confirms Server Verification ---
-        # The client will only send AUTH_OK if it successfully verified our server proof
-        confirmation = self.receive_exact(len(AUTH_CONFIRMATION_TOKEN))
-        if confirmation != AUTH_CONFIRMATION_TOKEN:
-            print(f"[{device_id}] [AUTHENTICATION] FAILED - Client rejected server identity or disconnected!")
+        # The client will only send the 32-byte confirmation tag if it successfully verified our server proof
+        expected_confirm_tag = self.crypto.build_transcript_hash(
+            "CONFIRM",
+            device_id,
+            server_challenge_nonce,
+            esp32_challenge_nonce
+        )
+        confirmation = self.receive_exact(CONFIRMATION_TAG_LENGTH)
+        if confirmation != expected_confirm_tag:
+            print(f"[{device_id}] [AUTHENTICATION] FAILED - Client confirmation tag invalid or server rejected!")
             return False, None
 
-        print(f"[{device_id}] [AUTHENTICATION] Client accepted server proof (AUTH_OK).")
+        print(f"[{device_id}] [AUTHENTICATION] Client accepted server proof (Cryptographic CONFIRM tag verified).")
         print(f"[{device_id}] Mutual authentication successful.\n")
         return True, device_id  # Handshake fully verified and confirmed on both sides!
 

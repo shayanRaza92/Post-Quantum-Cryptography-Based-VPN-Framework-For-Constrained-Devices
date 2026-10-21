@@ -18,7 +18,7 @@ const char* const DEVICE_ID       = "esp32-01";       // Device ID name sent to 
 const size_t DEVICE_ID_LENGTH        = 16;  // Fixed 16-byte buffer for device ID packet
 const size_t CHALLENGE_NONCE_LENGTH  = 32;  // 32-byte fresh random challenge nonce
 const size_t SIGNATURE_LENGTH        = 64;  // 64-byte Ed25519 digital signature length
-const char* const AUTH_CONFIRM_TOKEN = "AUTH_OK"; // 7-byte confirmation sent to server after verifying gateway
+const size_t CONFIRMATION_TAG_LENGTH = 32; // 32-byte SHA-256 confirmation tag sent to server after verifying gateway
 
 // --- Pinned Server Public Key ---
 // Server's fixed public key saved here so ESP32 only trusts your laptop and ignores fake servers
