@@ -18,16 +18,25 @@ A lightweight mutual authentication and secure communication tunnel between an E
 ![Handshake Sequence Diagram](sequence_diagram.png)
 
 1. **TCP Connection**: The ESP32 connects to the gateway over Wi-Fi on TCP port 9000.
-2. **Device Authorization**: The ESP32 sends its 16-byte Device ID (`esp32-01`). The server validates the ID against `authorized_devices.json` and drops unauthorized devices.
-3. **Mutual Challenge-Response**:
-   * The server sends a fresh 32-byte random challenge nonce.
-   * The ESP32 samples 32 bytes of physical entropy from its hardware TRNG (`esp_fill_random`).
-   * Both sides construct a session transcript:
-     `SHA-256("VPN-AUTH-v1|" + Role + "|" + DeviceID + "|" + ServerNonce + "|" + ClientNonce)`
-   * **Client Authentication**: The ESP32 signs the transcript (`Role = "CLIENT"`) with its Ed25519 private key and sends the 64-byte signature with its nonce. The server verifies the signature using the pre-registered public key.
-   * **Server Authentication**: The gateway signs the transcript (`Role = "SERVER"`) and sends its 64-byte signature back. The ESP32 verifies it using the pinned gateway public key.
-4. **Cryptographic Confirmation**: The ESP32 sends a 32-byte confirmation tag (`SHA-256("VPN-AUTH-v1|CONFIRM|...")`). The server verifies this digest before transitioning the session to the active tunnel state.
-5. **Active Tunnel**: The client and server begin bidirectional data exchange and periodic status pings.
+2. **Message 1 (Client Hello, 50 B)**:
+   * The ESP32 transmits `[1B Version] [1B AlgID] [16B DeviceID] [32B ClientNonce]`.
+   * Version (`0x01`) and AlgID (`0x01`) enforce protocol standards and downgrade protection.
+   * The gateway validates `DeviceID` against `authorized_devices.json` and drops unauthorized devices.
+3. **Message 2 (Server Proof, 96 B — Server Authenticates First)**:
+   * The gateway generates a 32-byte random challenge nonce (`ServerNonce`).
+   * The gateway constructs the Server Transcript (running hash over MSG 1):  
+     `SHA-256("VPN-v1|SERVER|" (14 B) || MSG1 (50 B) || ServerNonce (32 B))` -> 96 B input
+   * The gateway signs this digest with its Ed25519 private key and returns `[32B ServerNonce] [64B ServerSignature]`.
+   * The ESP32 verifies the signature against its pinned public key (`TRUSTED_GATEWAY_PUBLIC_KEY`). If verification fails, the ESP32 stops immediately.
+4. **Message 3 (Client Proof, 64 B — Client Binds Full Handshake History)**:
+   * The ESP32 constructs the Client Transcript binding the complete wire exchange (MSG 1 + MSG 2):  
+     `SHA-256("VPN-v1|CLIENT|" (14 B) || MSG1 (50 B) || MSG2 (96 B))` -> 160 B input
+   * The ESP32 signs this digest with its device private key and transmits its 64-byte signature.
+   * The gateway verifies the signature using the device's registered public key.
+5. **Message 4 (Server Verdict, 8 B)**:
+   * The gateway sends `AUTH_OK\n` to confirm mutual authentication succeeded.
+   * The ESP32 verifies `AUTH_OK` and transitions to the active tunnel.
+6. **Active Data Tunnel**: The client and server exchange newline-delimited telemetry and status pings, protected by an idle session timeout.
 
 ---
 

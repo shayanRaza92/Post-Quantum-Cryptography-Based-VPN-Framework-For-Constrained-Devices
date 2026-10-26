@@ -7,8 +7,7 @@
 
 class DeviceIdentity {
 private:
-  char    _deviceId[17];                                // Null-terminated device identifier string
-  uint8_t _seed[32];                                    // 32-byte secret seed stored in NVS flash
+  char    _deviceId[17];                                // Null-terminated device identifier string (max 16 chars + null)
   uint8_t _publicKey[crypto_sign_PUBLICKEYBYTES];       // 32-byte derived Ed25519 public key
   uint8_t _secretKey[crypto_sign_SECRETKEYBYTES];       // 64-byte derived Ed25519 secret signing key
   bool    _isInitialized;                               // Status flag indicating keys are ready

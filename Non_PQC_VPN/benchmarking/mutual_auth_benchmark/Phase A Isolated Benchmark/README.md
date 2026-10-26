@@ -21,62 +21,75 @@ The evaluation profiles each algorithm in memory without Wi-Fi or network transp
   $$\text{Time (ms)} = \frac{\text{CPU Cycles}}{240,000}$$
 * **Iteration Count:** 100 runs for fast tests (Ed25519 and ECDSA P-256); 10 runs for slow RSA key generation to prevent watchdog resets.
 
-## Benchmark Results Summary
+## Benchmark Methodology & KPIs
 
-| KPI ID | Metric | Ed25519 | ECDSA P-256 | RSA-3072 | Winner |
+To provide academic rigor suitable for defense and publication, the micro-benchmark suite instruments 9 Key Performance Indicators (KPIs):
+
+| KPI ID | Metric | Measurement Technique |
+| :--- | :--- | :--- |
+| **SIG-1** | **Keypair Generation Latency** | Hardware cycle counter (`ccount`) / `esp_timer` (Mean, Median, Min, Max, $\sigma$) |
+| **SIG-2** | **Public Key Wire Size** | Serialized octet length transmitted over the wire |
+| **SIG-3** | **Message Signing Latency** | Hardware cycle counter (includes SHA-256 / SHA-512 hashing inside timed window) |
+| **SIG-4** | **Signature Wire Size** | Actual serialized signature wire size (DER variable 70–72 B for ECDSA; fixed 64 B for Ed25519) |
+| **SIG-5** | **Signature Verification Latency** | Hardware cycle counter (includes message hashing verification inside timed window) |
+| **SIG-6** | **Per-Handshake Client Crypto** | Total cryptographic processing time per connection ($\text{SIG-3} + \text{SIG-5}$) |
+| **SIG-7a** | **Steady-State Dynamic Heap** | Peak dynamic heap allocation during runtime Sign + Verify (key pre-loaded in memory) |
+| **SIG-7b** | **KeyGen Peak Heap** | Peak dynamic heap allocation during keypair generation (prime search / field math) |
+| **SIG-8** | **Peak Crypto Stack Watermark** | FreeRTOS task high water mark with benchmark harness arrays placed in BSS (`static`) |
+| **SIG-9** | **Cryptographic Correctness** | Formal standards compliance (RFC 8032 §7.1 Test Vector 1 KAT + active `CHECK` macro) |
+
+## Benchmark Summary Table (Measured on ESP32 @ 240 MHz)
+
+| KPI ID | Metric | Ed25519 (libsodium) | ECDSA P-256 (mbedTLS) | RSA-3072 (mbedTLS) | Winner |
 | :--- | :--- | :---: | :---: | :---: | :---: |
-| **SIG-1** | **Key Generation Time** | **8.56 ms** | 146.93 ms | 9,630.80 ms | **Ed25519** |
+| **SIG-1** | **KeyGen Latency (Median)** | **8.68 ms** | 146.04 ms | 19,947.10 ms *(4.2–30.2 s)* | **Ed25519** |
 | **SIG-2** | **Public Key Wire Size** | **32 bytes** | 65 bytes | 384 bytes | **Ed25519** |
-| **SIG-3** | **Message Signing Time (64-byte challenge)** | **9.42 ms** | 158.58 ms | 375.81 ms | **Ed25519** |
-| **SIG-4** | **Signature Wire Size** | **64 bytes** | 71 bytes | 384 bytes | **Ed25519** |
-| **SIG-5** | **Verification Time** | 19.80 ms | 313.88 ms | **1.71 ms** | **RSA-3072** |
-| **SIG-6** | **Total Client Sign Time (SIG-1 + SIG-3)** | **17.99 ms** | 305.51 ms | 10,006.61 ms | **Ed25519** |
-| **SIG-7** | **Peak Dynamic Heap RAM** | **108 bytes** | 300 bytes | 2,068 bytes | **Ed25519** |
+| **SIG-3** | **Message Signing Latency (Median)** | **9.59 ms** | 157.70 ms | 386.66 ms | **Ed25519** |
+| **SIG-4** | **Signature Wire Size** | **64 bytes (Fixed)** | 70–72 bytes (Mean: 71.0 B) | 384 bytes (Fixed) | **Ed25519** |
+| **SIG-5** | **Verification Latency (Median)** | 19.76 ms | 312.38 ms | **1.71 ms** | **RSA-3072** |
+| **SIG-6** | **Per-Handshake Cost (SIG-3 + SIG-5)** | **29.35 ms** | 470.09 ms | 388.27 ms | **Ed25519** |
+| **SIG-7a**| **Steady-State Heap (Sign + Verify)** | **0 bytes** | 3,568 bytes | 11,664 bytes | **Ed25519** |
+| **SIG-7b**| **KeyGen Peak Heap (Provisioning)** | **0 bytes** | 2,896 bytes | 4,792 bytes | **Ed25519** |
+| **SIG-8** | **Peak Crypto Stack Watermark** | 4,116 bytes | 3,944 bytes | **3,928 bytes** | **RSA-3072** |
+| **SIG-9** | **Cryptographic Correctness** | **PASS (0 err, KAT)** | **PASS (0 err)** | **PASS (0 err)** | **All** |
 
-## Hardware Workload (CPU Cycles @ 240 MHz)
-
-| Metric | Ed25519 | ECDSA P-256 | RSA-3072 |
-| :--- | :---: | :---: | :---: |
-| **KeyGen Cycles** | **2,055,308** | 35,262,354 | 2,311,393,015 |
-| **Signing Cycles** | **2,261,378** | 38,059,479 | 90,194,354 |
-| **Verification Cycles** | 4,750,949 | 75,331,369 | **410,321** |
-| **Total Client Sign Cycles** | **4,316,686** | 73,321,833 | 2,401,587,369 |
+*Note on Stack Watermark (SIG-8):* Timing harness arrays are marked `static`, moving them to the `.bss` segment so `uxTaskGetStackHighWaterMark` reflects pure cryptographic library stack usage without test scaffolding pollution.
 
 ## Why Ed25519 Was Selected
 
-Ed25519 is the selected digital signature algorithm for the VPN client based on four critical technical findings:
+Ed25519 is the selected digital signature algorithm for the embedded VPN client based on four critical technical findings:
 
-1. **Superior Execution Speed ($17\times$ faster than ECDSA):** Key generation takes **8.56 ms** and signing takes **9.42 ms**. Total client authentication completes in **17.99 ms**, compared to **305.51 ms** for ECDSA and **10,006.61 ms** (~10 seconds) for RSA-3072.
-2. **Compact Network Payload ($8\times$ smaller than RSA):** Total handshake wire overhead (Public Key + Signature) is **96 bytes**, compared to 136 bytes for ECDSA and **768 bytes** for RSA. Smaller frames eliminate TCP packet fragmentation and minimize radio on-time.
-3. **Minimal Heap Footprint ($19\times$ less RAM than RSA):** Allocates only **108 bytes** of peak dynamic heap memory, compared to **300 bytes** for ECDSA and **2,068 bytes** for RSA-3072's BigNum MPI context.
-4. **Constant-Time Execution & Side-Channel Resistance:** Ed25519 operations over Twisted Edwards Curve25519 execute in constant time, preventing timing side-channel attacks, and derive nonces deterministically to eliminate the nonce collision vulnerability inherent to ECDSA.
+1. **Superior Per-Handshake Execution Speed ($16.0\times$ faster than ECDSA, $13.2\times$ faster than RSA):** In mutual authentication, the client must sign its proof and verify the gateway's proof. Ed25519 completes both operations in **29.35 ms** (9.59 ms sign + 19.76 ms verify), compared to **470.09 ms** for ECDSA P-256 and **388.27 ms** for RSA-3072.
+2. **Compact Network Payload ($8.0\times$ smaller than RSA):** Total handshake wire overhead (Public Key + Signature) is **96 bytes**, compared to 136 bytes for ECDSA and **768 bytes** for RSA. Smaller frames eliminate TCP packet fragmentation and minimize radio on-time.
+3. **Zero Dynamic Heap Footprint:** libsodium's Ed25519 implementation utilizes pure stack buffers, allocating **0 bytes of dynamic heap**, eliminating memory fragmentation risks in long-running IoT deployments.
+4. **Constant-Time Execution & Side-Channel Resistance:** Ed25519 operations over Twisted Edwards Curve25519 execute in constant time, preventing timing side-channel attacks, and derive nonces deterministically (RFC 8032) to eliminate the catastrophic random-nonce collision vulnerability inherent to ECDSA.
 
-While RSA verification is fast (1.71 ms), the client device must generate keys and sign challenges, where RSA's 9.6-second keygen, 376 ms signing, and 768-byte wire overhead make it impractical.
+*Note on RSA-3072 vs. ECDSA P-256:* While RSA key generation is impractical on an embedded microcontroller (~20 seconds median), key generation is a one-time factory provisioning cost that can be performed offline. On a pure per-handshake basis (Sign + Verify), RSA-3072 (388.27 ms) actually outperforms software ECDSA P-256 (470.09 ms) due to the ESP32's hardware-accelerated Modular Exponentiation (MPI) engine and fast public verification ($e=65537$). However, Ed25519 dramatically outperforms both with no hardware accelerator required.
 
 ## Hardware Serial Output Verification
 
-### Ed25519 Benchmark Terminal Output
-![Ed25519 Terminal Capture](screenshots/terminal_ed25519.png)
-
-### ECDSA P-256 Benchmark Terminal Output
-![ECDSA Terminal Capture](screenshots/terminal_ecdsa.png)
-
-### Classical RSA-3072 Benchmark Terminal Output
-![RSA Terminal Capture](screenshots/terminal_rsa.png)
-
-### Benchmark Results Summary Table
+### ESP32 Serial Monitor Summary Table Output
 ![Summary Table Capture](screenshots/terminal_summary_table.png)
 
 ## Benchmark Visualizations
 
-### Execution Latency Comparison (Log Scale)
-![Execution Time Comparison](graphs/fig_timing_comparison.png)
+### 1. Key Generation Mean Latency (SIG-1)
+![KeyGen Mean Latency](graphs/fig_keygen_mean.png)
 
-### Communication Payload Overhead (Bytes)
-![Wire Size Overhead](graphs/fig_size_overhead.png)
+### 2. Cryptographic Authentication Cost (SIG-6: Sign + Verify)
+![Crypto Auth Cost](graphs/fig_crypto_auth_cost.png)
 
-### Dynamic Heap Memory Allocation (Bytes)
-![Dynamic Heap Memory](graphs/fig_memory_comparison.png)
+### 3. Signature Wire Size (SIG-4)
+![Signature Wire Size](graphs/fig_signature_wire_size.png)
+
+### 4. Steady-State Dynamic Heap RAM (SIG-7a)
+![Steady-State Heap RAM](graphs/fig_heap_steady_state.png)
+
+### 5. KeyGen Peak Heap RAM (SIG-7b)
+![KeyGen Peak Heap RAM](graphs/fig_heap_keygen.png)
+
+### 6. Peak Cryptographic Stack Usage (SIG-8)
+![Peak Crypto Stack Usage](graphs/fig_stack_usage.png)
 
 ## How to Run the Benchmark
 

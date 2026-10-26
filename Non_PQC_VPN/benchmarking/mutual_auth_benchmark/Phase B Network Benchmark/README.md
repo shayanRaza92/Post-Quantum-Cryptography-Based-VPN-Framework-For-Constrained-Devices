@@ -1,62 +1,117 @@
 # Phase B: Integrated Network Benchmark (Mutual Authentication Handshake)
 
-Network benchmark implementation and evaluation report measuring real-world mutual authentication handshakes between the ESP32 client and laptop server over local Wi-Fi and TCP sockets.
+Network benchmarking implementation and rigorous evaluation methodology measuring real-world mutual authentication handshakes between the ESP32 embedded client and laptop server over local Wi-Fi and TCP sockets.
 
-While Phase A evaluated raw cryptographic operations in isolated chip memory, Phase B profiles end-to-end handshake latency, network transmission overhead, and packet exchange under real embedded Wi-Fi conditions.
+While Phase A evaluated raw cryptographic primitives in isolated micro-benchmarks (zero I/O), Phase B profiles end-to-end handshake latency, transmission overhead, and packet exchange under real embedded Wi-Fi network conditions.
 
-## Algorithms Tested
+---
 
-| Algorithm | Key Curve / Standard | Implementation Library | Wire Signature Size |
-| :--- | :--- | :--- | :---: |
-| **Ed25519** | Twisted Edwards Curve25519 | libsodium (ESP32) / cryptography (Server) | 64 bytes |
-| **ECDSA P-256** | NIST prime curve secp256r1 | ESP32 mbedTLS / cryptography (Server) | ~71 bytes (DER) |
-| **RSA-3072** | PKCS#1 v1.5 with SHA-256 | ESP32 mbedTLS / cryptography (Server) | 384 bytes |
+## Methodological Improvements & Corrections
 
-## Test Environment
+Based on comprehensive architectural alignment with the production VPN system, Phase B has been updated from first principles:
 
-* **Client Node:** ESP32-D0WDQ6 Dual-Core Xtensa LX6 @ 240 MHz (IP: `10.27.228.175`)
-* **Gateway Server:** Python 3.10+ running on Laptop (IP: `10.27.228.216`, TCP Port: 9000)
-* **Transport:** TCP socket over IEEE 802.11 b/g/n local Wi-Fi
-* **Handshake Protocol:** 3-Way mutual challenge-response:
-  1. `[MSG1]` Server transmits 32-byte challenge nonce to ESP32
-  2. `[MSG2]` ESP32 signs server challenge, generates 32-byte client challenge, and sends both back (Signature + Nonce)
-  3. `[MSG3]` Server signs client challenge and returns its digital signature
-  4. Both endpoints verify digital signatures before concluding the session
+1. **Protocol Alignment (Production 4-Message Handshake & Running Transcript):**
+   - Eliminates legacy 6-stage surrogate challenges and dummy CONFIRM tags.
+   - Enforces the production 4-message exchange:
+     - `MSG 1`: Client Hello (50B) -> `[Version (1B) | AlgID (1B) | DeviceID (16B) | ClientNonce (32B)]`
+     - `MSG 2`: Server Proof -> `[ServerNonce (32B) | ServerSig over Server Transcript]`
+     - `MSG 3`: Client Proof -> `[ClientSig over Client Transcript]`
+     - `MSG 4`: Server Verdict & Timing ACK (8B) -> `[Status (4B) | Server Crypto Time in us (4B)]`
+   - **Running Transcript Hashing (TLS 1.3 style):**
+     - Server Transcript: $\text{SHA-256}(\texttt{"VPN-v1|SERVER|"} \parallel \text{MSG 1} \parallel \text{ServerNonce})$
+     - Client Transcript: $\text{SHA-256}(\texttt{"VPN-v1|CLIENT|"} \parallel \text{MSG 1} \parallel \text{MSG 2})$
+     - Binds the exact wire bytes of the entire handshake sequence, preventing MITM modification or desynchronization.
 
-## Benchmark Results Summary
+2. **Elimination of TCP Delayed-ACK & Radio Artifacts:**
+   - **Unified Single-Packet Framing:** Message headers (2B length) and payloads are bundled into a single write buffer (`uint8_t packet[2 + len]`), preventing TCP segment fragmentation and avoiding Nagle delayed-ACK timeouts (~40–200 ms).
+   - **Socket Tuning:** `TCP_NODELAY` is enabled on both client and server sockets.
+   - **Wi-Fi Power-Save Disabled:** `WiFi.setSleep(false)` prevents modem sleep clock jitter.
+   - **Microsecond Polling Yields:** Polling waits use `delayMicroseconds(250)` instead of millisecond blocking.
 
-| Metric | Ed25519 | ECDSA P-256 | RSA-3072 | Winner |
-| :--- | :---: | :---: | :---: | :---: |
-| **Average Handshake Latency** | **249.48 ms** | 737.01 ms | 750.90 ms | **Ed25519 (3.0× faster)** |
-| **Minimum Handshake Latency** | **238.71 ms** | 267.49 ms | 501.63 ms | **Ed25519** |
-| **Maximum Handshake Latency** | **260.79 ms** | 1,009.39 ms | 1,112.68 ms | **Ed25519 (No latency spikes)** |
-| **Latency Standard Deviation** | **5.28 ms** | 207.15 ms | 191.43 ms | **Ed25519 (Extremely stable)** |
-| **Total Wire Payload (3 Messages)** | **198 Bytes** | 212 Bytes | 838 Bytes | **Ed25519 (4.2× lighter than RSA)** |
-| **Handshake Success Rate** | **100% (20/20)** | **100% (20/20)** | **100% (10/10)** | All 100% |
+3. **Empirical NULL-Crypto Control Baseline:**
+   - Evaluates a control handshake (`Suite 0`) with identical wire frames (50B, 96B, 64B, 8B) and round trips but zero cryptographic computation.
+   - Measures the empirical physical transport floor over Wi-Fi without relying on mathematical subtractions alone.
 
-## Why Ed25519 Was Selected for Live Networks
+4. **Measured Server Cryptographic Latency:**
+   - The laptop server precisely timestamps its internal signature verification and generation steps.
+   - Server crypto duration (in microseconds) is returned to the ESP32 in the 8-byte MSG 4 ACK packet, enabling exact decomposition:
+     $$T_{\text{overhead}} = T_{\text{total}} - T_{\text{client\_crypto}} - T_{\text{server\_crypto}}$$
 
-1. **3× Faster Connection Setup:** Ed25519 completed mutual authentication in **249.48 ms**, compared to **737.01 ms** for ECDSA and **750.90 ms** for RSA. For IoT sensor nodes that sleep and periodically wake to send readings, this reduces radio on-time and power consumption by 66%.
-2. **Minimal Latency Jitter ($\sigma = 5.28\text{ ms}$):** Ed25519 produced consistent completion times across all 20 runs (ranging tightly between 238.71 ms and 260.79 ms). In contrast, ECDSA and RSA fluctuated between 267 ms and 1,112 ms ($\sigma \approx 200\text{ ms}$), introducing unpredictable connection delays.
-3. **Compact Frame Size (198 Bytes vs. 838 Bytes):** Ed25519 exchanged only 198 bytes across the entire 3-way handshake. RSA required 838 bytes ($4.2\times$ more traffic), consuming excessive Wi-Fi airtime and increasing vulnerability to wireless packet drops.
+5. **Dynamic Metric Tracking & Statistical Rigor:**
+   - Replaces hard-coded bytes and 100% success constants with live byte counters and verified handshake success counters.
+   - Explicit failure verdicts (Status = 0) prevent TCP stream stalls or cascade failures.
+   - Every metric reports **Mean**, **Median**, **Standard Deviation ($\sigma$)**, **Min**, and **Max**.
 
-## Benchmark Visualizations
+---
 
-### Average Handshake Latency Comparison
-![Handshake Latency](graphs/fig_network_latency_comparison.png)
+## Test Suites Evaluated
 
-### Authentication Wire Overhead
-![Wire Payload](graphs/fig_wire_overhead_comparison.png)
+| Suite | Description | Key Curve / Standard | Implementation Library | Wire Signature Format | Iterations ($N$) |
+| :--- | :--- | :--- | :--- | :---: | :---: |
+| **0. NULL Control** | Physical Wi-Fi transport baseline | None (zero compute) | Baseline raw sockets | None (dummy frames) | 50 |
+| **1. Ed25519** | Modern Edwards curve | Twisted Edwards Curve25519 | libsodium (ESP32) / cryptography (Server) | 64 bytes (raw) | 50 |
+| **2. ECDSA P-256** | NIST prime curve | NIST secp256r1 | ESP32 mbedTLS / cryptography (Server) | 70–72 bytes (DER) | 50 |
+| **3. RSA-3072** | Classical modular exponentiation | PKCS#1 v1.5 with SHA-256 | ESP32 mbedTLS / cryptography (Server) | 384 bytes (raw) | 20 |
 
-### Handshake Latency Stability Across Iterations
-![Latency Stability](graphs/fig_handshake_run_distribution.png)
+---
+
+## Handshake Protocol Architecture
+
+Each handshake iteration executes the 4-message mutual authentication sequence:
+
+```
+    ESP32 Client (Embedded)                              Laptop Server (Gateway)
+       |                                                            |
+       |  ---- [MSG 1] Client Hello (50B) ------------------------> | (Checks allowlist & AlgID)
+       |       [Ver(1) | Alg(1) | DevID(16) | N_cli(32)]            |
+       |                                                            | (Signs Server Transcript)
+       |  <--- [MSG 2] Server Proof (96B) ------------------------- |
+       |       [N_srv(32) | sigma_srv(64)]                          |
+       |                                                            |
+ (Verifies server sig)                                              |
+ (Signs Client Transcript)                                          |
+       |  ---- [MSG 3] Client Proof (64B) ------------------------> | (Verifies client sig)
+       |       [sigma_cli(64)]                                      |
+       |                                                            |
+       |  <--- [MSG 4] Server Verdict ACK (8B) -------------------- | (Sends status & crypto time)
+       |       [Status(4) | ServerCryptoTime_us(4)]                 |
+       |                                                            |
+```
+
+---
+
+## Standardized Metrics Reported
+
+1. **`NET-1` Total Handshake Latency:** End-to-end wall-clock duration from initial Client Hello transmission to Verdict ACK reception (Mean, Median, $\sigma$, Min, Max).
+2. **`NET-2` Handshake Wire Payload:** Total wire bytes transferred across the 4 messages per handshake (including 2-byte length-prefix framing).
+3. **`NET-3` Client Cryptographic Time:** On-chip ESP32 compute time (verification of server signature + generation of client signature).
+4. **`NET-4` Server Cryptographic Time:** Server-side compute time (generation of server signature + verification of client signature).
+5. **`NET-5` Non-Crypto Overhead / Transit Latency:** Physical radio round-trip time, TCP stack buffering, and packet serialization overhead:
+   $$T_{\text{overhead}} = T_{\text{total}} - T_{\text{client\_crypto}} - T_{\text{server\_crypto}}$$
+6. **`NET-6` Handshake Success Rate:** Percentage of handshakes where all cryptographic proofs verified successfully.
+
+---
+
+## Instructions to Run the Benchmark
+
+### 1. Start Server on Laptop
+Ensure Python 3.9+ with `cryptography` installed:
+```bash
+python3 benchmark_server.py
+```
+Note the printed local IP address (e.g., `10.202.171.216`).
+
+### 2. Configure and Flash ESP32
+1. Open `Phase_B_Network_Benchmark.ino` in Arduino IDE or compile via CLI.
+2. Verify Wi-Fi credentials (`WIFI_SSID`, `WIFI_PASSWORD`) and set `LAPTOP_IP` to your server's IP address.
+3. Upload to the ESP32.
+4. Open the Serial Monitor at `115200` baud to observe live iteration logs and the final summary table.
+
+---
 
 ## Files in this Directory
 
-* **`Phase_B_Network_Benchmark.ino`**: ESP32 Arduino sketch executing the 3-way handshake benchmarks.
-* **`benchmark_server.py`**: Python TCP gateway server running the mutual authentication verification loops.
-* **`benchmark_report.pdf`**: Complete PDF reference report containing KPI definitions, full iteration logs, terminal screenshots, and the Phase B benchmark execution pseudocode.
-* **`benchmark_report.tex`**: LaTeX source document for the benchmark report.
-* **`graphs/`**: High-resolution Matplotlib benchmark plots.
-* **`screenshots/`**: Terminal captures recorded during live execution.
-* **`README.md`**: Technical overview and execution instructions.
+* **`Phase_B_Network_Benchmark.ino`**: ESP32 firmware running all 4 benchmark suites with single-segment packet framing and unified 64-bit timing.
+* **`ed25519_phaseB_yousuf.ino`**: Standalone Ed25519 benchmark sketch aligned with the 4-message protocol.
+* **`benchmark_server.py`**: Python TCP gateway server executing transcript verification, server timing instrumentation, and statistical reporting.
+* **`README.md`**: Technical specification, protocol layout, and benchmark guidelines.

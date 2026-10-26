@@ -61,6 +61,9 @@ void setup() {
   Serial.print  ("ESP32 IP : ");
   Serial.println(WiFi.localIP()); // Print the IP address assigned by your Wi-Fi router
 
+  // Disable Wi-Fi modem sleep to eliminate radio power-save latency jitter
+  WiFi.setSleep(false);
+
   // Initialize identity AFTER Wi-Fi is active.
   // Per Espressif TRM, the ESP32 hardware TRNG requires active RF circuitry for true cryptographic entropy.
   identity.begin();
