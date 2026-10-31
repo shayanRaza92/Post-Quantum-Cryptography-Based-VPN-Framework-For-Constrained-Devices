@@ -17,9 +17,15 @@ bool          isVpnAuthenticated    = false; // Set to true only when mutual aut
 
 // --- Connects to the laptop server over TCP and runs the handshake ---
 void connectToGatewayServer() {
+  Serial.println("\n----------------------------------------");
+  Serial.printf("Device ID         : %s\n", identity.getDeviceId());
+  Serial.print ("Device Public Key : ");
+  identity.printPublicKeyHex();
+  Serial.println("----------------------------------------");
   Serial.printf("[TCP] Connecting to %s:%d ...\n", GATEWAY_IP, GATEWAY_PORT);
 
   if (networkClient.connect(GATEWAY_IP, GATEWAY_PORT)) { // Try opening TCP socket to laptop
+    networkClient.setNoDelay(true);                      // Disable TCP Nagle buffering for low-latency handshakes
     Serial.println("[TCP] Connected.");
 
     if (auth.performMutualAuthentication()) { // Run the OOP security handshake
@@ -41,7 +47,9 @@ void setup() {
   Serial.begin(115200); // Start serial communication at 115200 baud rate for debug printing
   delay(1000);          // Wait 1 second for serial monitor to open
 
-  Serial.println("\n=== ESP32 VPN Client Node (Modular OOP) ===");
+  Serial.println("\n================================================================");
+  Serial.println("                         Classical VPN");
+  Serial.println("================================================================");
 
   if (sodium_init() < 0) { // Start up the Libsodium cryptographic engine
     Serial.println("[ERROR] Failed to initialize libsodium!");
