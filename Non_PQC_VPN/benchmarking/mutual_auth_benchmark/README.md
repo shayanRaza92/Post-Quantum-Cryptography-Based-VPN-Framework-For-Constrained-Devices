@@ -1,4 +1,4 @@
-# Phase A: Isolated Micro-Benchmarks (Digital Signatures on ESP32)
+# Digital Signature Micro-Benchmarks on ESP32
 
 Standalone benchmark implementation and results report evaluating digital signature algorithms on the ESP32 microcontroller at an equivalent 128-bit classical security baseline.
 
@@ -93,7 +93,7 @@ Ed25519 is the selected digital signature algorithm for the embedded VPN client 
 
 ## How to Run the Benchmark
 
-1. Open `Phase_A_Isolated_Benchmark.ino` in the Arduino IDE.
+1. Open `mutual_auth_benchmark.ino` in the Arduino IDE.
 2. Select your board: **Tools > Board > ESP32 Arduino > ESP32 Dev Module**.
 3. Set CPU Frequency to **240 MHz**.
 4. Connect your ESP32 via USB and select the corresponding Serial port (`/dev/ttyUSB0` on Linux).
@@ -102,9 +102,7 @@ Ed25519 is the selected digital signature algorithm for the embedded VPN client 
 
 ## Files in this Directory
 
-* **`Phase_A_Isolated_Benchmark.ino`**: Standalone Arduino sketch containing the benchmark implementation for Ed25519, ECDSA P-256, and RSA-3072.
-* **`benchmark_report.tex`**: LaTeX source code for the comprehensive micro-benchmark report.
+* **`mutual_auth_benchmark.ino`**: Standalone Arduino sketch containing the benchmark implementation for Ed25519, ECDSA P-256, and RSA-3072.
 * **`benchmark_report.pdf`**: Compiled PDF reference documentation containing KPI definitions, comparison tables, serial output terminal captures, and pseudocode.
-* **`generate_graphs.py`**: Python matplotlib script used to generate publication-grade comparison plots.
 * **`graphs/`**: Directory containing the generated benchmark visualization plots.
 * **`screenshots/`**: Directory containing the ESP32 hardware serial monitor captures.

@@ -1,4 +1,4 @@
-// ESP32 Micro-Benchmark for Digital Signatures (Phase A: Isolated)
+// ESP32 Micro-Benchmark for Digital Signatures
 // Evaluates Ed25519, ECDSA P-256, and RSA-3072
 // Rigorous Methodology addressing all academic review points:
 // 1. Static harness arrays: prevents benchmark arrays from polluting task stack watermarks (SIG-8).
@@ -666,7 +666,7 @@ void test_rsa_3072() {
 
 void print_comparison_table() {
   Serial.println("\n==========================================================================================");
-  Serial.println("                              BENCHMARK RESULTS SUMMARY (PHASE A)                         ");
+  Serial.println("                                  BENCHMARK RESULTS SUMMARY                              ");
   Serial.println("==========================================================================================");
   Serial.printf("%-7s | %-37s | %-12s | %-12s | %-12s\n", "KPI ID", "Metric", "Ed25519", "ECDSA P-256", "RSA-3072");
   Serial.println("--------+---------------------------------------+--------------+--------------+-------------");
@@ -709,7 +709,7 @@ void setup() {
   }
 
   Serial.println("\n==========================================================================================");
-  Serial.println("             ESP32 Digital Signature Micro-Benchmark (Phase A: Isolated)                  ");
+  Serial.println("                      ESP32 Digital Signature Micro-Benchmark                             ");
   Serial.println("------------------------------------------------------------------------------------------");
   Serial.printf("ESP-IDF Version   : %s\n", esp_get_idf_version());
   Serial.printf("Chip Model & Rev  : %s (Rev %d)\n", ESP.getChipModel(), ESP.getChipRevision());

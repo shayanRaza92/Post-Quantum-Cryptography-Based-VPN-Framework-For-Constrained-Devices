@@ -76,7 +76,7 @@ The server will print its local IP address, public key, and listen for incoming 
 
 ## Performance Summary (ESP32 @ 240 MHz)
 
-### Digital Signature Authentication (Phase A)
+### Digital Signature Authentication
 * **Chosen Algorithm:** Ed25519
 * **Auth Latency (Sign + Verify):** 29.35 ms
 * **Dynamic Heap Overhead:** 0 bytes
