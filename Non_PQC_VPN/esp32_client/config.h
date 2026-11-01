@@ -16,7 +16,7 @@ const uint8_t PROTOCOL_VERSION    = 0x01; // Protocol Version 1
 const uint8_t ALGORITHM_ID        = 0x01; // Suite 1: Ed25519-Auth + X25519-KEX + HKDF-SHA256
 
 // --- Device Identity Name ---
-const char* const DEVICE_ID       = "esp32-01"; // Device ID name sent to check the allowlist
+const char* const DEVICE_ID       = "esp32-03"; // Device ID name sent to check the allowlist
 
 // --- Protocol Packet Sizes and Tokens (4-Way Mutual Auth with Ephemeral X25519 Key Exchange) ---
 const size_t DEVICE_ID_LENGTH        = 16;  // Fixed 16-byte buffer for device ID packet
