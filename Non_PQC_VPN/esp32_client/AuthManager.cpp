@@ -78,6 +78,11 @@ bool AuthManager::readExact(uint8_t* buffer, size_t count, unsigned long timeout
       buffer[bytesRead++] = _client.read();
     }
     if (bytesRead < count) {
+      // Server closed the socket (e.g. device ID not in allowlist) and nothing is left to read:
+      // fail immediately instead of waiting out the full timeout.
+      if (!_client.connected() && !_client.available()) {
+        break;
+      }
       delayMicroseconds(250); // Yield to TCP stack without introducing multi-ms delay
     }
   }
@@ -232,7 +237,11 @@ bool AuthManager::sendClientHello(uint8_t* outClientNonce) {
 bool AuthManager::receiveServerProof(const uint8_t* clientNonce, uint8_t* outServerNonce) {
   uint8_t packet[MSG2_SERVER_PROOF_SIZE];
   if (!readExact(packet, sizeof(packet))) {
-    Serial.println("| [ERROR] Timed out waiting for MSG 2 (Server Proof).                         |");
+    if (!_client.connected()) {
+      Serial.println("| [ERROR] Gateway closed connection before MSG 2 (device not authorized?).    |");
+    } else {
+      Serial.println("| [ERROR] Timed out waiting for MSG 2 (Server Proof).                         |");
+    }
     return false;
   }
 

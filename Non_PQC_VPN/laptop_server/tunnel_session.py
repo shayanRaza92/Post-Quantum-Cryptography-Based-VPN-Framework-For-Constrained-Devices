@@ -17,8 +17,14 @@ from config import (
     CLIENT_CONFIRM_LABEL,
     SERVER_CONFIRM_LABEL,
     HANDSHAKE_TIMEOUT,
-    TUNNEL_IDLE_TIMEOUT
+    TUNNEL_IDLE_TIMEOUT,
+    MAX_TUNNEL_LINE_BYTES,
+    ALLOWLIST_RECHECK_INTERVAL,
+    TUNNEL_POLL_INTERVAL
 )
+# Thread-safe print: each session's handshake log is printed as one uninterrupted block,
+# so the output of several ESP32s connecting at once never gets mixed together.
+from console import safe_print as print, log_block
 
 
 def print_hex_64_box(data_bytes):
@@ -64,7 +70,8 @@ class VpnSession:
     4-Message Handshake with Ephemeral X25519 Key Exchange & Key Confirmation -> Data Tunnel.
     """
 
-    def __init__(self, connection, client_address, crypto_engine, allowlist, handshake_slot=None):
+    def __init__(self, connection, client_address, crypto_engine, allowlist,
+                 handshake_slot=None, registry=None):
         self.connection = connection
         self.client_address = client_address
         self.crypto = crypto_engine
@@ -73,6 +80,22 @@ class VpnSession:
         self.handshake_slot = handshake_slot
         self.k_confirm = None
         self.k_session = None
+        self.registry = registry            # Shared SessionRegistry (one live tunnel per device)
+        self.device_id = None               # Known once MSG 1 has been parsed
+        self.registered_pubkey = None       # Allowlist key used to authenticate this session
+        self._terminate_reason = None       # Set when another thread closes this session
+
+    def terminate(self, reason):
+        """Called from ANOTHER thread (registry) to close this session; wakes its blocked recv()."""
+        self._terminate_reason = reason
+        try:
+            self.connection.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+
+    def _log_label(self):
+        ip, port = self.client_address[0], self.client_address[1]
+        return f"{self.device_id or 'unknown-device'} @ {ip}:{port}"
 
     def receive_exact(self, expected_byte_count):
         """Reads exactly expected_byte_count bytes with deadline enforcement."""
@@ -118,6 +141,7 @@ class VpnSession:
             print(f"[{client_ip}] [AUTH-FAIL] Malformed Device ID field: {id_field!r}")
             return None, None, None, None, None
         device_id = raw_id.decode("ascii")
+        self.device_id = device_id  # Used in the log header for this session
 
         # Step 1-3: Client generation & transmission of MSG 1
         print(f"\n[Client] Generating 32-byte fresh Client Nonce [N_cli] via Hardware TRNG...")
@@ -495,6 +519,7 @@ class VpnSession:
         device_id, reg_key, client_nonce, client_eph_pk, msg1 = self._receive_client_hello(client_ip)
         if not device_id:
             return False, None
+        self.registered_pubkey = reg_key
 
         # Message 2: Server Proof with X25519 Share (128 B)
         msg2 = self._send_server_proof(device_id, client_nonce, client_eph_pk, msg1)
@@ -515,27 +540,58 @@ class VpnSession:
     def handle_tunnel(self, device_id):
         print(f"[{device_id}] [TUNNEL ACTIVE] Line-Framed Stream (PFS Established)")
         print(f"[{device_id}] [SESSION MASTER KEY]: {self.k_session.hex().upper()[:32]}...")
-        self.connection.settimeout(TUNNEL_IDLE_TIMEOUT)
+        # Short poll timeout so idle-timeout and allowlist re-checks run even when the device is quiet
+        self.connection.settimeout(TUNNEL_POLL_INTERVAL)
         tunnel_buffer = bytearray()
+        last_rx = time.monotonic()
+        last_allowlist_check = time.monotonic()
 
         while True:
+            now = time.monotonic()
+
+            # Revocation: device removed from (or re-keyed in) authorized_devices.json -> close
+            if now - last_allowlist_check >= ALLOWLIST_RECHECK_INTERVAL:
+                last_allowlist_check = now
+                current_key = self.allowlist.get_device_public_key(device_id)
+                if current_key != self.registered_pubkey:
+                    print(f"[{device_id}] [REVOKED] Device no longer authorized in allowlist. Closing tunnel.")
+                    break
+
+            if now - last_rx >= TUNNEL_IDLE_TIMEOUT:
+                print(f"[{device_id}] [TUNNEL TIMEOUT] Idle for {int(TUNNEL_IDLE_TIMEOUT)}s. Closing session.")
+                break
+
             try:
                 chunk = self.connection.recv(1024)
-                if not chunk:
-                    print(f"[{device_id}] Client disconnected cleanly.")
-                    break
-                tunnel_buffer.extend(chunk)
-
-                while b"\n" in tunnel_buffer:
-                    line, tunnel_buffer = tunnel_buffer.split(b"\n", 1)
-                    incoming_text = line.decode("utf-8", errors="ignore").strip()
-                    if incoming_text:
-                        print(f"[{device_id}] [RX] {incoming_text}")
-                        reply = f"SERVER_ACK_FOR_{device_id}: {incoming_text}\n"
-                        self.connection.sendall(reply.encode("utf-8"))
-                        print(f"[{device_id}] [TX] {reply.strip()}")
             except socket.timeout:
-                print(f"[{device_id}] [TUNNEL TIMEOUT] Idle for {int(TUNNEL_IDLE_TIMEOUT)}s. Closing session.")
+                continue
+
+            if not chunk:
+                if self._terminate_reason:
+                    print(f"[{device_id}] [SESSION CLOSED] {self._terminate_reason}.")
+                else:
+                    print(f"[{device_id}] Client disconnected cleanly.")
+                break
+            last_rx = time.monotonic()
+            tunnel_buffer.extend(chunk)
+
+            oversized = False
+            while b"\n" in tunnel_buffer:
+                line, tunnel_buffer = tunnel_buffer.split(b"\n", 1)
+                if len(line) > MAX_TUNNEL_LINE_BYTES:
+                    oversized = True
+                    break
+                incoming_text = line.decode("utf-8", errors="ignore").strip()
+                if incoming_text:
+                    print(f"[{device_id}] [RX] {incoming_text}")
+                    reply = f"SERVER_ACK_FOR_{device_id}: {incoming_text}\n"
+                    self.connection.sendall(reply.encode("utf-8"))
+                    print(f"[{device_id}] [TX] {reply.strip()}")
+
+            # Memory guard: a client that never sends '\n' (or sends huge lines) is cut off,
+            # so one misbehaving device can never exhaust the whole gateway's memory.
+            if oversized or len(tunnel_buffer) > MAX_TUNNEL_LINE_BYTES:
+                print(f"[{device_id}] [PROTOCOL-ERROR] Line exceeds {MAX_TUNNEL_LINE_BYTES} bytes. Closing session.")
                 break
 
     def _release_handshake_slot(self):
@@ -544,22 +600,35 @@ class VpnSession:
             self.handshake_slot = None
 
     def run(self):
+        registered = False
         try:
             try:
-                authenticated, device_id = self.perform_handshake()
+                # Buffer this session's whole handshake printout and emit it as one block
+                with log_block(self._log_label):
+                    authenticated, device_id = self.perform_handshake()
             finally:
                 self._release_handshake_slot()
 
             if not authenticated:
                 return
 
+            # One live tunnel per device: a newer session for the same ID replaces the old one
+            if self.registry is not None:
+                self.registry.register(device_id, self)
+                registered = True
+
             self.handle_tunnel(device_id)
 
-        except ConnectionResetError:
-            print(f"[{self.client_address[0]}] Connection reset by peer.")
+        except (ConnectionResetError, BrokenPipeError):
+            print(f"[{self._log_label()}] Connection reset by peer.")
         except Exception as e:
-            print(f"[{self.client_address[0]}] Session error: {e}")
+            print(f"[{self._log_label()}] Session error: {e}")
         finally:
             self._release_handshake_slot()
-            self.connection.close()
-            print(f"[{self.client_address[0]}] Session closed.\n")
+            if registered:
+                self.registry.unregister(self.device_id, self)
+            try:
+                self.connection.close()
+            except OSError:
+                pass
+            print(f"[{self._log_label()}] Session closed.\n")

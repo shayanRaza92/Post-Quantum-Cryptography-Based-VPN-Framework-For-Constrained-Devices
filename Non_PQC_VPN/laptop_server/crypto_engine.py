@@ -10,6 +10,7 @@ from config import (
     SERVER_TRANSCRIPT_LABEL, CLIENT_TRANSCRIPT_LABEL,
     CLIENT_CONFIRM_LABEL, SERVER_CONFIRM_LABEL, KEY_DERIVATION_INFO
 )
+from console import safe_print as print  # Thread-safe printing
 
 
 class DeviceAllowlist:
@@ -21,6 +22,7 @@ class DeviceAllowlist:
         self._lock = threading.Lock()
         self._cache = {}
         self._cache_mtime = None
+        self._bad_mtime = None
 
     def load_authorized_devices(self):
         """Returns {device_id: public_key_bytes}, reloading from disk only if the file changed."""
@@ -29,14 +31,24 @@ class DeviceAllowlist:
             return {}
 
         with self._lock:
-            mtime = self.file_path.stat().st_mtime
+            try:
+                mtime = self.file_path.stat().st_mtime
+            except OSError:
+                return {}
             if self._cache_mtime != mtime:
-                self._cache = self._read_file()
+                devices = self._read_file(report_error=(mtime != self._bad_mtime))
+                if devices is None:
+                    self._bad_mtime = mtime  # Report each broken version of the file only once
+                    # File is mid-edit or has a JSON typo: keep the last good allowlist instead of
+                    # treating it as empty (which would revoke every connected device at once).
+                    # _cache_mtime is not updated, so the file is retried on the next lookup.
+                    return dict(self._cache)
+                self._cache = devices
                 self._cache_mtime = mtime
             return dict(self._cache)
 
-    def _read_file(self):
-        """Reads allowlist JSON from disk and returns {device_id: public_key_bytes}."""
+    def _read_file(self, report_error=True):
+        """Reads allowlist JSON from disk. Returns {device_id: public_key_bytes}, or None on error."""
         try:
             with open(self.file_path, "r") as f:
                 data = json.load(f)
@@ -53,8 +65,9 @@ class DeviceAllowlist:
                         pass
                 return devices
         except Exception as e:
-            print(f"[ERROR] Failed to read allowlist: {e}")
-            return {}
+            if report_error:
+                print(f"[ERROR] Failed to read allowlist (keeping previous version): {e}")
+            return None
 
     def get_device_public_key(self, device_id):
         """Retrieves the registered public key for a device ID."""
