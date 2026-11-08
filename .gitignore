@@ -27,3 +27,6 @@ build/
 *.fdb_latexmk
 *.synctex.gz
 
+
+# Python virtual environments
+.venv/
