@@ -9,7 +9,16 @@ A lightweight mutual authentication and secure key exchange tunnel between an ES
 * **`esp32_client/`**: ESP32 C++ firmware for Arduino IDE (`esp32_client.ino`, `AuthManager`, `DeviceIdentity`, `config.h`).
 * **`laptop_server/`**: Python gateway server (`server.py`, `tunnel_session.py`, `crypto_engine.py`, `authorized_devices.json`).
 * **`sequence_diagram.png`**: Protocol flow diagram showing the mutual authentication and key exchange protocol.
+* **`screenshots/`**: Photos of the classical VPN running on three ESP32s.
+  * `authorization_check_three_esp32.jpeg`: allowlist authorization check with three devices.
+  * `three_esp32_demo/`: the demo run, one photo per timestamp (`2026-11-01_6-45-00_PM.jpeg` ...).
 * **`benchmarking/`**: Standalone microcontroller benchmarks and analysis reports for classical cryptography (Digital Signatures and Key Exchange).
+  * `mutual_auth_benchmark/`: Ed25519 vs. ECDSA P-256 vs. RSA-3072. `phase_a_isolated/ed25519_isolated/` holds the standalone Ed25519 micro-benchmark.
+  * `key_exchange_benchmark/`: X25519 vs. ECDH P-256 vs. DH-3072. `phase_a_isolated/` holds the standalone X25519-over-Wi-Fi test (`x25519_wifi/x25519_wifi.ino` + `x25519_server.py`).
+
+Related projects built on this baseline (separate folders at the repository root):
+* [`../Non_PQC_VPN_ESP32_Gateway/`](../Non_PQC_VPN_ESP32_Gateway/README.md): the same VPN with an ESP32 as the gateway (no laptop).
+* [`../Non_PQC_VPN_DHT22/`](../Non_PQC_VPN_DHT22/README.md): DHT22 temperature readings sent through the VPN, with an AES-256-GCM encrypted tunnel.
 
 ---
 

@@ -106,3 +106,4 @@ Ed25519 is the selected digital signature algorithm for the embedded VPN client 
 * **`benchmark_report.pdf`**: Compiled PDF reference documentation containing KPI definitions, comparison tables, serial output terminal captures, and pseudocode.
 * **`graphs/`**: Directory containing the generated benchmark visualization plots.
 * **`screenshots/`**: Directory containing the ESP32 hardware serial monitor captures.
+* **`phase_a_isolated/ed25519_isolated/ed25519_isolated.ino`**: Smaller standalone Ed25519-only micro-benchmark (Phase A, isolated: keygen / sign / verify cycle counts over 100 runs). It is a separate sketch, so open it on its own in the Arduino IDE.

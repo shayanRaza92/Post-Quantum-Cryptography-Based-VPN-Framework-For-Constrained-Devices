@@ -1,20 +1,41 @@
 # Post-Quantum VPN Framework For Constrained Devices
 
-A lightweight VPN framework connecting an ESP32 microcontroller to a laptop gateway.
+A lightweight VPN framework for ESP32 microcontrollers. Each project uses the same 4-message mutual-authentication handshake with an ephemeral X25519 key exchange, HKDF-SHA256 key derivation and HMAC key confirmation. A classical baseline (Ed25519) is compared with a post-quantum version (ML-DSA-44, NIST FIPS 204).
 
 ---
 
 ## Repository Layout
 
-* **`Non_PQC_VPN/`**: Classical cryptography baseline implementation (Ed25519 mutual authentication, allowlisting, TCP transport) and micro-benchmarks.
-  * `esp32_client/`: ESP32 Arduino C++ firmware.
-  * `laptop_server/`: Python gateway server.
-  * `benchmarking/`: Performance tests for mutual authentication and key exchange algorithms.
-  * `sequence_diagram.png`: Sequence diagram of the authentication handshake.
+```
+FYP/
+├── Non_PQC_VPN/                  Classical baseline: laptop gateway + ESP32 clients
+│   ├── esp32_client/             ESP32 firmware (Arduino IDE)
+│   ├── laptop_server/            Python gateway
+│   ├── benchmarking/             Signature + key-exchange benchmarks (graphs, screenshots, report)
+│   ├── screenshots/              Photos of the three-ESP32 demo
+│   └── sequence_diagram.png      Handshake sequence diagram
+├── Non_PQC_VPN_ESP32_Gateway/    Classical VPN with NO laptop: one ESP32 is the gateway
+│   ├── esp32_gateway/            Gateway firmware (creates its own Wi-Fi network)
+│   └── esp32_client/             Client firmware set up for the ESP32 gateway
+├── Non_PQC_VPN_DHT22/            DHT22 temperature readings over the classical VPN (AES-256-GCM tunnel)
+│   ├── esp32_dht22_client/       ESP32 firmware with the DHT22 sensor
+│   ├── laptop_server/            Python gateway that decrypts and logs readings
+│   ├── screenshots/              Test-run screenshots
+│   └── sequence_diagram.png      Handshake + encrypted telemetry diagram
+└── PQC_VPN/                      Post-quantum VPN: ML-DSA-44 instead of Ed25519
+    ├── esp32_client/             ESP32 firmware (needs the "mldsa" Arduino library)
+    ├── laptop_server/            Python gateway (+ build_libmldsa44.sh)
+    └── benchmarking/             Ed25519 vs. ML-DSA-44 benchmark
+```
+
+Each project folder is **self-contained**. The Arduino IDE only compiles files inside a sketch's own folder, so every ESP32 sketch keeps its own copy of the shared client code (`AuthManager`, `DeviceIdentity`). If you change the handshake in one project, update the copies in the others too.
 
 ---
 
-## Detailed Guide
+## Documentation
 
-For setup steps, code explanation, and the handshake sequence diagram, see:
-* **[Non_PQC_VPN Documentation](Non_PQC_VPN/README.md)**
+* **[Non_PQC_VPN](Non_PQC_VPN/README.md)**: classical protocol, handshake walkthrough, setup, performance summary
+* **[Non_PQC_VPN_ESP32_Gateway](Non_PQC_VPN_ESP32_Gateway/README.md)**: ESP32-to-ESP32 setup, gateway Serial commands, multi-device behaviour
+* **[Non_PQC_VPN_DHT22](Non_PQC_VPN_DHT22/README.md)**: sensor wiring, encrypted record layer, telemetry log
+* **[PQC_VPN](PQC_VPN/README.md)**: post-quantum setup, building `libmldsa44.so`
+* Benchmarks: [signatures](Non_PQC_VPN/benchmarking/mutual_auth_benchmark/README.md) · [key exchange](Non_PQC_VPN/benchmarking/key_exchange_benchmark/README.md) · [Ed25519 vs. ML-DSA-44](PQC_VPN/benchmarking/mutual_auth_benchmark/README.md)

@@ -1,7 +1,7 @@
 # Classical VPN: DHT22 Temperature Telemetry
 
 Sends DHT22 temperature and humidity readings from ESP32 devices to the laptop gateway
-through the classical VPN in [`../`](../README.md).
+through the classical VPN in [`../Non_PQC_VPN/`](../Non_PQC_VPN/README.md).
 
 The handshake is **unchanged**. It is the same 4-message Ed25519 + X25519 + HKDF-SHA256 mutual
 authentication. The only change is the data tunnel. The original sends plaintext ping lines.
@@ -15,15 +15,15 @@ This version sends every reading as an **encrypted, authenticated record keyed f
   * `esp32_dht22_client.ino`: reads the DHT22 and sends one encrypted record every `SENSOR_INTERVAL_MS`.
   * `SecureChannel.h/.cpp`: the AES-256-GCM record layer, using mbedTLS with the ESP32 hardware AES engine (new).
   * `TunnelLog.h/.cpp`: boxed Serial printouts of the data keys, the encrypted records, and the payloads (new).
-  * `AuthManager`, `DeviceIdentity`, `config.h`: copied from `../esp32_client/`. `config.h` adds the sensor settings.
+  * `AuthManager`, `DeviceIdentity`, `config.h`: copied from `../Non_PQC_VPN/esp32_client/`. `config.h` adds the sensor settings.
 * **`laptop_server/`**: Python gateway.
   * `secure_channel.py`: the record layer, matching the ESP32 side (new).
   * `telemetry_store.py`: validates readings and appends them to `temperature_log.csv` (new).
   * `tunnel_printer.py`: boxed printouts of the data keys, the encrypted records, and the payloads (new).
   * `tunnel_session.py`: handshake unchanged; `handle_tunnel()` now decrypts sensor records.
-  * Everything else is copied from `../laptop_server/`.
+  * Everything else is copied from `../Non_PQC_VPN/laptop_server/`.
 * **`sequence_diagram.png`**: the full protocol flow (handshake, data keys, encrypted telemetry, teardown).
-* **`make_sequence_diagram.py`**: regenerates the diagram (`python make_sequence_diagram.py`, needs matplotlib).
+* **`screenshots/`**: screenshots of the results from a test run (`dht1.png` to `dht5.png`).
 
 ---
 
@@ -43,7 +43,7 @@ A bare 4-pin DHT22 needs a **10 kΩ pull-up** between DATA and 3.3V. 3-pin break
 
 ![Protocol Sequence Diagram](sequence_diagram.png)
 
-**Phase 1** (MSG 1-4) is the unchanged classical handshake; see [`../README.md`](../README.md) for its details.
+**Phase 1** (MSG 1-4) is the unchanged classical handshake; see [`../Non_PQC_VPN/README.md`](../Non_PQC_VPN/README.md) for its details.
 It ends with both sides holding the same 32-byte session master key `K_session`. That key is never sent
 on the wire, and it is new for every connection because it comes from ephemeral X25519 keys.
 Everything below happens **after** that point.

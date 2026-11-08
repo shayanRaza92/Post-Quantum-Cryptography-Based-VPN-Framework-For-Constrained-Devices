@@ -136,3 +136,9 @@ python3 benchmark_gateway_kex.py
 2. Verify `WIFI_SSID`, `WIFI_PASSWORD`, and set `LAPTOP_IP` to the IP printed by `benchmark_gateway_kex.py`.
 3. Select **Tools > Board > ESP32 Arduino > ESP32 Dev Module** (`240 MHz`) and upload.
 4. Open the **Serial Monitor** at **115200 baud** to view the live runs and summary table.
+
+## Phase A: Isolated X25519 over Wi-Fi (`phase_a_isolated/`)
+
+A smaller learning demo of the plain X25519 exchange. It has no authentication, so it is not a VPN.
+* **`x25519_wifi/x25519_wifi.ino`**: the ESP32 creates the Wi-Fi network `ESP32-X25519-Demo` (password `X25519demo`) and listens on `192.168.4.1:5000`.
+* **`x25519_server.py`**: run it on the laptop after joining that network (`python3 x25519_server.py`). It needs PyNaCl (`pip install pynacl`). Both sides print the same shared secret.

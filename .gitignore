@@ -4,6 +4,9 @@ __pycache__/
 *$py.class
 *.so
 
+# Runtime data written by the DHT22 gateway (Non_PQC_VPN_DHT22/laptop_server/)
+temperature_log.csv
+
 # Arduino / IDE builds
 build/
 *.bin
