@@ -25,7 +25,11 @@ FYP/
 └── PQC_VPN/                      Post-quantum VPN: ML-DSA-44 instead of Ed25519
     ├── esp32_client/             ESP32 firmware (needs the "mldsa" Arduino library)
     ├── laptop_server/            Python gateway (+ build_libmldsa44.sh)
-    └── benchmarking/             Ed25519 vs. ML-DSA-44 benchmark
+    ├── benchmarking/             Ed25519 vs. ML-DSA-44 benchmark
+    └── PQC_VPN_MLKEM/            Fully post-quantum VPN: ML-DSA-44 + ML-KEM-512 + AES-256-GCM tunnel
+        ├── esp32_client/         ESP32 firmware (needs the two libraries below)
+        ├── laptop_server/        Python gateway (+ build_native_libs.sh, requirements.txt)
+        └── arduino_libraries/    MLDSA44 + MLKEM512 Arduino libraries (mldsa-native / mlkem-native)
 ```
 
 Each project folder is **self-contained**. The Arduino IDE only compiles files inside a sketch's own folder, so every ESP32 sketch keeps its own copy of the shared client code (`AuthManager`, `DeviceIdentity`). If you change the handshake in one project, update the copies in the others too.
@@ -38,4 +42,5 @@ Each project folder is **self-contained**. The Arduino IDE only compiles files i
 * **[Non_PQC_VPN_ESP32_Gateway](Non_PQC_VPN_ESP32_Gateway/README.md)**: ESP32-to-ESP32 setup, gateway Serial commands, multi-device behaviour
 * **[Non_PQC_VPN_DHT22](Non_PQC_VPN_DHT22/README.md)**: sensor wiring, encrypted record layer, telemetry log
 * **[PQC_VPN](PQC_VPN/README.md)**: post-quantum setup, building `libmldsa44.so`
+* **[PQC_VPN_MLKEM](PQC_VPN/PQC_VPN_MLKEM/README.md)**: ML-KEM-512 key exchange, AES-256-GCM tunnel, setup and verification
 * Benchmarks: [signatures](Non_PQC_VPN/benchmarking/mutual_auth_benchmark/README.md) · [key exchange](Non_PQC_VPN/benchmarking/key_exchange_benchmark/README.md) · [Ed25519 vs. ML-DSA-44](PQC_VPN/benchmarking/mutual_auth_benchmark/README.md)
