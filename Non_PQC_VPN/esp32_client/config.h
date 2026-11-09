@@ -8,7 +8,7 @@ const char* const WIFI_SSID     = "Redmi 13C";     // Name of your Wi-Fi network
 const char* const WIFI_PASSWORD = "92144444";      // Password of your Wi-Fi network
 
 // --- Server Network Settings ---
-const char* const GATEWAY_IP      = "10.180.139.216"; // IP address of your laptop running the server
+const char* const GATEWAY_IP      = "10.38.28.216"; // IP address of your laptop running the server
 const uint16_t    GATEWAY_PORT    = 9000;             // Port number the server is listening on
 
 // --- Protocol Version & Algorithm Identifiers ---
@@ -39,5 +39,14 @@ const uint8_t TRUSTED_GATEWAY_PUBLIC_KEY[32] = {
   0x4f, 0xdd, 0xc7, 0xc5, 0x3d, 0x86, 0x78, 0x92,
   0x2e, 0xb1, 0x77, 0x59, 0xb1, 0x76, 0x73, 0xba
 };
+
+// --- In-Tunnel Rekeying ---
+// The ESP32 replaces the tunnel keys with a fresh key exchange inside the encrypted tunnel after
+// this many messages or this much time with the same keys, whichever comes first. The gateway
+// closes the tunnel if a device goes past the gateway's hard limits (200 messages / 600 s per key).
+// For a live demo, set REKEY_AFTER_MESSAGES to e.g. 10 to see a rekey every ~15 seconds.
+const uint32_t      REKEY_AFTER_MESSAGES      = 100;     // ~150 s at one ping every 1.5 s
+const unsigned long REKEY_AFTER_MS            = 300000;  // 5 minutes
+const unsigned long REKEY_RESPONSE_TIMEOUT_MS = 10000;   // Gateway must answer a REKEY_REQ within 10 s
 
 #endif // VPN_CONFIG_H

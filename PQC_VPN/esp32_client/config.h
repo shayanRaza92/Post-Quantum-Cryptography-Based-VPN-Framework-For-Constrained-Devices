@@ -128,4 +128,13 @@ const uint8_t TRUSTED_GATEWAY_PUBLIC_KEY[1312] = {
   0x17, 0x41, 0xbc, 0x1a, 0x8b, 0x1e, 0x0f, 0x49, 0xab, 0x35, 0x2f, 0xdd, 0xc6, 0x59, 0xbb, 0xd5
 };
 
+// --- In-Tunnel Rekeying ---
+// The ESP32 replaces the tunnel keys with a fresh key exchange inside the encrypted tunnel after
+// this many messages or this much time with the same keys, whichever comes first. The gateway
+// closes the tunnel if a device goes past the gateway's hard limits (200 messages / 600 s per key).
+// For a live demo, set REKEY_AFTER_MESSAGES to e.g. 10 to see a rekey every ~15 seconds.
+const uint32_t      REKEY_AFTER_MESSAGES      = 100;     // ~150 s at one ping every 1.5 s
+const unsigned long REKEY_AFTER_MS            = 300000;  // 5 minutes
+const unsigned long REKEY_RESPONSE_TIMEOUT_MS = 10000;   // Gateway must answer a REKEY_REQ within 10 s
+
 #endif // VPN_CONFIG_H

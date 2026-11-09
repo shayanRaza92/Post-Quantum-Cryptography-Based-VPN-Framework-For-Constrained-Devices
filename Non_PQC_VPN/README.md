@@ -8,7 +8,7 @@ A lightweight VPN between ESP32 microcontrollers and a Python gateway server. It
 
 * **`esp32_client/`**: ESP32 C++ firmware for Arduino IDE (`esp32_client.ino`, `AuthManager`, `DeviceIdentity`, `SecureTunnel` (AES-256-GCM), `config.h`).
 * **`laptop_server/`**: Python gateway server (`server.py`, `tunnel_session.py`, `crypto_engine.py`, `secure_tunnel.py` (AES-256-GCM), `session_registry.py`, `console.py`, `authorized_devices.json`).
-* **`sequence_diagram.png`**: Full protocol flow: handshake, tunnel key derivation, encrypted data frames, teardown.
+* **`sequence_diagram.png`**: Full protocol flow: handshake, tunnel key derivation, encrypted data frames, in-tunnel rekeying, teardown.
 * **`screenshots/`**: Photos of the classical VPN running on three ESP32s.
   * `authorization_check_three_esp32.jpeg`: allowlist authorization check with three devices.
   * `three_esp32_demo/`: the demo run, one photo per timestamp (`2026-11-01_6-45-00_PM.jpeg` ...).
@@ -56,10 +56,17 @@ Related projects built on this baseline (separate folders at the repository root
    * The ESP32 verifies the verdict token and validates the server key confirmation tag.
 6. **AES-256-GCM Data Tunnel** keyed from `K_session` (`esp32_client/SecureTunnel.*`, `laptop_server/secure_tunnel.py`):
    * A separate key for each direction (HKDF-Expand): `K_c2s = HMAC-SHA256(K_session, "VPN-v1|TUNNEL|C2S" || 0x01)` for ESP32 → gateway and `K_s2c = HMAC-SHA256(K_session, "VPN-v1|TUNNEL|S2C" || 0x01)` for gateway → ESP32.
-   * Frame: `[2B LEN][8B SEQ][ciphertext][16B GCM tag]`. The nonce is `DIR (4B) || SEQ (8B)` and the AAD is `LEN || SEQ`, so the header is authenticated too. Maximum 1,024 B of plaintext per frame.
+   * Frame: `[2B LEN][8B SEQ][ciphertext][16B GCM tag]`. The nonce is `DIR (4B) || SEQ (8B)` and the AAD is `LEN || SEQ`, so the header is authenticated too.
+   * Plaintext of every frame: `[1B TYPE][message]`, where TYPE is `0x01` DATA, `0x02` REKEY_REQ or `0x03` REKEY_RESP. Maximum 1,023 B of message per frame.
    * `SEQ` starts at 0 and must increase by exactly 1. A tampered, replayed, reordered, oversized or plain-text frame closes **that** session only.
-   * Each status ping (`"[esp32-01] STATUS_PING #1"`, 25 B) travels as a 51-byte frame; the encrypted ACK is 76 B. The text never appears on the Wi-Fi.
+   * Each status ping (`"[esp32-01] STATUS_PING #1"`, 25 B) travels as a 52-byte frame; the encrypted ACK is 77 B. The text never appears on the Wi-Fi.
    * On the ESP32, AES runs on the hardware accelerator (mbedTLS); on the laptop, the `cryptography` package (`AESGCM`) is used. This is the same tunnel design as `PQC_VPN`.
+7. **In-Tunnel Rekeying** (the keys are replaced regularly without reconnecting):
+   * **When:** the ESP32 rekeys after **100 messages or 5 minutes** with the same keys (`REKEY_AFTER_MESSAGES` / `REKEY_AFTER_MS` in `config.h`; set it to e.g. 10 for a live demo).
+   * **How:** a **fresh X25519 exchange inside the encrypted tunnel**. The ESP32 sends `REKEY_REQ = [epoch n+1][32 B X25519 key]` (63 B frame); the gateway answers with `REKEY_RESP = [epoch n+1][32 B X25519 key]` (63 B frame). Both messages use the old keys, and the ESP32 pauses its pings until the answer arrives.
+   * **New keys:** `PRK = HMAC-SHA256(K_session_old, SS_new)`, then `K_session = HMAC-SHA256(PRK, "VPN-v1|REKEY" || epoch || 0x01)`, then new `K_c2s` / `K_s2c` as above. `SEQ` restarts at 0 in both directions and the old keys are wiped.
+   * **Why it is safe:** the rekey travels inside the authenticated tunnel, so nobody else can trigger one, and mixing in the old key binds the new keys to this session. A key captured later only exposes traffic of its own epoch (forward secrecy inside one connection).
+   * **gateway policy (per device):** a device that sends more than **200 messages** or keeps a key longer than **10 minutes** without rekeying, asks for a rekey within **5 s** of the last one, or sends a wrong epoch / bad key share is disconnected. Only that device is affected.
 
 ---
 

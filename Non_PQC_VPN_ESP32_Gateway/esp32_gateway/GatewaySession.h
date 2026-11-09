@@ -64,6 +64,7 @@ private:
   void sendVerdict(bool accepted);
   void runTunnel();
   bool handleMessage(const uint8_t* msg, size_t len, uint64_t seq);
+  bool handleRekey(const uint8_t* payload, size_t len);
 
   bool recvExact(uint8_t* buffer, size_t count);   // Honors the handshake deadline
   bool sendAll(const void* data, size_t len);

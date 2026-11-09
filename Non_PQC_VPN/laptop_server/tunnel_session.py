@@ -3,7 +3,10 @@ import time
 import re
 import hmac
 import hashlib
-from secure_tunnel import SecureTunnel, TunnelError, MAX_PLAINTEXT  # AES-256-GCM data tunnel
+import struct
+from secure_tunnel import (  # AES-256-GCM data tunnel with in-tunnel rekeying
+    SecureTunnel, TunnelError, MAX_PAYLOAD, MSG_DATA, MSG_REKEY_REQ, MSG_REKEY_RESP, MSG_NAMES
+)
 from config import (
     PROTOCOL_VERSION,
     ALGORITHM_ID,
@@ -20,7 +23,10 @@ from config import (
     HANDSHAKE_TIMEOUT,
     TUNNEL_IDLE_TIMEOUT,
     ALLOWLIST_RECHECK_INTERVAL,
-    TUNNEL_POLL_INTERVAL
+    TUNNEL_POLL_INTERVAL,
+    REKEY_MAX_MESSAGES,
+    REKEY_MAX_SECONDS,
+    REKEY_MIN_INTERVAL
 )
 # Thread-safe print: each session's handshake log is printed as one uninterrupted block,
 # so the output of several ESP32s connecting at once never gets mixed together.
@@ -562,6 +568,10 @@ class VpnSession:
                     print(f"[{device_id}] [REVOKED] Device no longer authorized in allowlist. Closing tunnel.")
                     break
 
+            if tunnel.key_age > REKEY_MAX_SECONDS:
+                print(f"[{device_id}] [REKEY-POLICY] Key older than {int(REKEY_MAX_SECONDS)} s and no rekey. Closing session.")
+                break
+
             if now - last_rx >= TUNNEL_IDLE_TIMEOUT:
                 print(f"[{device_id}] [TUNNEL TIMEOUT] Idle for {int(TUNNEL_IDLE_TIMEOUT)}s. Closing session.")
                 break
@@ -580,26 +590,77 @@ class VpnSession:
             last_rx = time.monotonic()
 
             try:
-                # feed() enforces the frame-size limit (1,024 B plaintext), so one device cannot exhaust memory
-                for seq, ct, tag, plaintext in tunnel.feed(chunk):
-                    text = plaintext.decode("utf-8", errors="replace")
-                    reply = f"SERVER_ACK_FOR_{device_id}: {text}".encode("utf-8")[:MAX_PLAINTEXT]
-                    frame = tunnel.seal(reply)
-                    self.connection.sendall(frame)
-                    tx_seq, nonce, tx_ct, _ = tunnel.last_tx
-                    print("\n".join([  # One print call = one uninterrupted block per message
-                        f"[{device_id}] <- RECEIVED encrypted msg #{seq} ({10 + len(ct) + 16} bytes over Wi-Fi)",
-                        f"     ciphertext : {ct[:12].hex().upper()}...  (unreadable without the key)",
-                        f"     auth tag   : {tag.hex().upper()}  -> VALID (not tampered)",
-                        f"     decrypted  : \"{text}\"",
-                        f"[{device_id}] -> SENT encrypted reply msg #{tx_seq} ({len(frame)} bytes over Wi-Fi)",
-                        f"     message    : \"{reply.decode('utf-8', errors='replace')}\"",
-                        f"     ciphertext : {tx_ct[:12].hex().upper()}...  (nonce {nonce.hex().upper()})",
-                        "",
-                    ]))
+                # feed() enforces the frame-size limit, so one device cannot exhaust memory
+                for seq, ct, tag, msg_type, payload in tunnel.feed(chunk):
+                    if msg_type == MSG_REKEY_REQ:
+                        self._handle_rekey(tunnel, device_id, payload)   # Always allowed: it is the fix
+                    elif msg_type == MSG_DATA:
+                        self._enforce_rekey_policy(tunnel)               # Over the limit => not answered
+                        self._handle_data(tunnel, device_id, seq, ct, tag, payload)
+                    else:
+                        raise TunnelError(f"unexpected {MSG_NAMES[msg_type]} from client")
             except TunnelError as e:
                 print(f"[{device_id}] [TUNNEL-ERROR] {e}. Dropping session.")
                 break
+
+    def _enforce_rekey_policy(self, tunnel):
+        """Refuses data (closing this session) once a device has used one key for too long (it must rekey)."""
+        if tunnel.rx_seq > REKEY_MAX_MESSAGES:
+            raise TunnelError(f"rekey policy: {tunnel.rx_seq} messages with one key (limit {REKEY_MAX_MESSAGES})")
+        if tunnel.key_age > REKEY_MAX_SECONDS:
+            raise TunnelError(f"rekey policy: key older than {int(REKEY_MAX_SECONDS)} s")
+
+    def _handle_data(self, tunnel, device_id, seq, ct, tag, payload):
+        text = payload.decode("utf-8", errors="replace")
+        reply = f"SERVER_ACK_FOR_{device_id}: {text}".encode("utf-8")[:MAX_PAYLOAD]
+        frame = tunnel.seal(reply)
+        self.connection.sendall(frame)
+        tx_seq, nonce, tx_ct, _ = tunnel.last_tx
+        print("\n".join([  # One print call = one uninterrupted block per message
+            f"[{device_id}] <- RECEIVED encrypted msg #{seq} ({10 + len(ct) + 16} bytes over Wi-Fi, key epoch {tunnel.epoch})",
+            f"     ciphertext : {ct[:12].hex().upper()}...  (unreadable without the key)",
+            f"     auth tag   : {tag.hex().upper()}  -> VALID (not tampered)",
+            f"     decrypted  : \"{text}\"",
+            f"[{device_id}] -> SENT encrypted reply msg #{tx_seq} ({len(frame)} bytes over Wi-Fi)",
+            f"     message    : \"{reply.decode('utf-8', errors='replace')}\"",
+            f"     ciphertext : {tx_ct[:12].hex().upper()}...  (nonce {nonce.hex().upper()})",
+            "",
+        ]))
+
+    def _check_rekey_request(self, tunnel, payload, key_share_len):
+        """Validates REKEY_REQ = [4B epoch][key share]; returns (epoch, client key share)."""
+        if len(payload) != 4 + key_share_len:
+            raise TunnelError(f"malformed REKEY_REQ ({len(payload)} bytes)")
+        epoch = struct.unpack(">I", payload[:4])[0]
+        if epoch != tunnel.epoch + 1:
+            raise TunnelError(f"REKEY_REQ for epoch {epoch}, expected {tunnel.epoch + 1}")
+        if tunnel.key_age < REKEY_MIN_INTERVAL:
+            raise TunnelError(f"rekey requested after only {tunnel.key_age:.1f} s (minimum {REKEY_MIN_INTERVAL:.0f} s)")
+        return epoch, payload[4:]
+
+    def _finish_rekey(self, tunnel, device_id, epoch, server_share, shared_secret, kex_name):
+        """Sends REKEY_RESP with the OLD keys, then switches both directions to the new keys."""
+        old_rx = tunnel.rx_seq
+        self.connection.sendall(tunnel.seal(struct.pack(">I", epoch) + server_share, MSG_REKEY_RESP))
+        tunnel.rekey(shared_secret, epoch)
+        print("\n".join([
+            f"[{device_id}] [REKEY] Epoch {epoch}: fresh {kex_name} exchange inside the tunnel after {old_rx} messages.",
+            f"     new K_c2s : {tunnel.k_c2s.hex().upper()[:16]}...   new K_s2c : {tunnel.k_s2c.hex().upper()[:16]}...",
+            "     old keys discarded, msg # restarts at 0 in both directions",
+            "",
+        ]))
+
+    def _handle_rekey(self, tunnel, device_id, payload):
+        """REKEY_REQ = [4B epoch][32B client X25519 key] -> fresh X25519 exchange."""
+        epoch, client_pk = self._check_rekey_request(tunnel, payload, 32)
+        server_sk, server_pk = self.crypto.generate_ephemeral_keypair()
+        try:
+            shared_secret = self.crypto.compute_shared_secret(server_sk, client_pk)
+        except Exception as e:
+            raise TunnelError(f"invalid X25519 key in REKEY_REQ: {e}") from None
+        if shared_secret == b"\x00" * 32:
+            raise TunnelError("low-order X25519 key in REKEY_REQ")
+        self._finish_rekey(tunnel, device_id, epoch, server_pk, shared_secret, "X25519")
 
     def _release_handshake_slot(self):
         if self.handshake_slot is not None:

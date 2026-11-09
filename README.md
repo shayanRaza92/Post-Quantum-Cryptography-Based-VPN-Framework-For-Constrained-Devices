@@ -13,11 +13,11 @@ FYP/
 │   ├── laptop_server/            Python gateway
 │   ├── benchmarking/             Signature + key-exchange benchmarks (graphs, screenshots, report)
 │   ├── screenshots/              Photos of the three-ESP32 demo
-│   └── sequence_diagram.png      Handshake + AES-256-GCM tunnel diagram
+│   └── sequence_diagram.png      Handshake + AES-256-GCM tunnel + rekeying diagram
 ├── Non_PQC_VPN_ESP32_Gateway/    Classical VPN with NO laptop: one ESP32 is the gateway
 │   ├── esp32_gateway/            Gateway firmware (creates its own Wi-Fi network)
 │   ├── esp32_client/             Client firmware set up for the ESP32 gateway
-│   └── sequence_diagram.png      Wi-Fi join + handshake + AES-256-GCM tunnel diagram
+│   └── sequence_diagram.png      Wi-Fi join + handshake + AES-256-GCM tunnel + rekeying diagram
 ├── Non_PQC_VPN_DHT22/            DHT22 temperature readings over the classical VPN (AES-256-GCM tunnel)
 │   ├── esp32_dht22_client/       ESP32 firmware with the DHT22 sensor
 │   ├── laptop_server/            Python gateway that decrypts and logs readings
@@ -28,7 +28,7 @@ FYP/
     ├── laptop_server/            Python gateway (+ build_native_libs.sh, requirements.txt)
     ├── arduino_libraries/        MLDSA44 + MLKEM512 Arduino libraries (mldsa-native / mlkem-native)
     ├── benchmarking/             Ed25519 vs. ML-DSA-44 benchmark
-    └── sequence_diagram.png      ML-DSA-44 + ML-KEM-512 handshake + AES-256-GCM tunnel diagram
+    └── sequence_diagram.png      ML-DSA-44 + ML-KEM-512 handshake + AES-256-GCM tunnel + rekeying diagram
 ```
 
 Each project folder is **self-contained**. The Arduino IDE only compiles files inside a sketch's own folder, so every ESP32 sketch keeps its own copy of the shared client code (`AuthManager`, `DeviceIdentity`). If you change the handshake in one project, update the copies in the others too.

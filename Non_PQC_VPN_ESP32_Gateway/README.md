@@ -28,7 +28,7 @@ The same classical VPN as [`Non_PQC_VPN/`](../Non_PQC_VPN/README.md), but here *
 | `esp32_gateway/SessionRegistry.*` | One live tunnel per device ID (like `session_registry.py`) |
 | `esp32_gateway/Log.*` | Thread-safe Serial output: each handshake prints as one block (like `console.py`) |
 | `esp32_client/` | Client firmware: a copy of `Non_PQC_VPN/esp32_client/` (including `SecureTunnel`, AES-256-GCM) set up for the ESP32 gateway |
-| `sequence_diagram.png` | Full protocol flow: Wi-Fi join, handshake, tunnel keys, encrypted frames, teardown |
+| `sequence_diagram.png` | Full protocol flow: Wi-Fi join, handshake, tunnel keys, encrypted frames, in-tunnel rekeying, teardown |
 
 ![Protocol Sequence Diagram](sequence_diagram.png)
 
@@ -91,6 +91,7 @@ Every client runs in its **own FreeRTOS task**, so a problem with one client aff
 | Same device connects again | The new tunnel replaces the old one |
 | `revoke <id>` while connected | Only that device is disconnected |
 | Tampered, replayed, reordered or oversized encrypted frame | Only that session is closed |
+| Client skips rekeying (over 200 messages or 10 min per key), rekeys too often, or sends a bad rekey | Only that session is closed |
 | No data for 30 s | That tunnel is closed (clients ping every 1.5 s) |
 | Too many connections | Limits: 6 sessions in total, 4 handshakes at once, 2 per IP. Extra connections are refused |
 | Gateway out of memory for a new client | Only the new client is refused |
@@ -101,3 +102,4 @@ Every client runs in its **own FreeRTOS task**, so a problem with one client aff
 ## Security Notes
 * `GATEWAY_PRIVATE_SEED` is in the source code so that the clients' pinned key stays the same as with the laptop gateway. Anyone who reads it can pretend to be the gateway. For a real deployment, generate a new seed, keep it out of the repository, and update `TRUSTED_GATEWAY_PUBLIC_KEY` in the clients.
 * The tunnel is **encrypted with AES-256-GCM**, the same design as `Non_PQC_VPN/` and `PQC_VPN/`: one key per direction derived from `K_session`, a 64-bit sequence number in every frame, and the 16-byte GCM tag checked before anything is used. Both ESP32s use the hardware AES engine through mbedTLS.
+* **In-tunnel rekeying** works exactly as in [`Non_PQC_VPN/`](../Non_PQC_VPN/README.md): every 100 messages or 5 minutes the client runs a fresh X25519 exchange inside the tunnel (`REKEY_REQ` / `REKEY_RESP`), both sides switch to new keys, and the old keys are wiped. The gateway's limits are `REKEY_MAX_MESSAGES`, `REKEY_MAX_MS` and `REKEY_MIN_INTERVAL_MS` in `gateway_config.h`.

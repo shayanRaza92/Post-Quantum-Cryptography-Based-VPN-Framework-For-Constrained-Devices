@@ -7,7 +7,8 @@ The post-quantum version of the classical VPN in [`../Non_PQC_VPN/`](../Non_PQC_
 | Algorithm ID | `0x01` | `0x03` |
 | Authentication (signatures) | Ed25519 | **ML-DSA-44** (NIST FIPS 204) |
 | Key exchange | Ephemeral X25519 | **Ephemeral ML-KEM-512** (NIST FIPS 203) |
-| Data tunnel | AES-256-GCM (same design) | **AES-256-GCM**, one key per direction, replay-protected |
+| Data tunnel | AES-256-GCM + X25519 rekeying | **AES-256-GCM**, one key per direction, replay-protected |
+| In-tunnel rekeying | Fresh X25519 every 100 messages / 5 min | **Fresh ML-KEM-512** every 100 messages / 5 min |
 | MSG 1 / MSG 2 / MSG 3 / MSG 4 | 82 / 128 / 96 / 40 B | 850 / 3,220 / 2,452 / 40 B |
 | Total handshake bytes | 346 B | 6,562 B |
 
@@ -40,7 +41,7 @@ Both the signatures and the key exchange are post-quantum, so traffic recorded t
 * **`arduino_libraries/`**: the two Arduino libraries used by both the ESP32 and the laptop.
   * `MLKEM512/`: `MLKEM512::` wrapper around the portable C sources of [mlkem-native](https://github.com/pq-code-package/mlkem-native) v2.0.0.
   * `MLDSA44/`: `MLDSA44::` wrapper around mldsa-native v1.0.0-beta2 (`MLD_CONFIG_REDUCE_RAM`).
-* **`sequence_diagram.png`**: Full protocol flow: ML-DSA-44 + ML-KEM-512 handshake, tunnel key derivation, encrypted frames, teardown.
+* **`sequence_diagram.png`**: Full protocol flow: ML-DSA-44 + ML-KEM-512 handshake, tunnel key derivation, encrypted frames, ML-KEM-512 rekeying, teardown.
 * **`benchmarking/mutual_auth_benchmark/`**: Ed25519 vs. ML-DSA-44 benchmark on the ESP32 ([README](benchmarking/mutual_auth_benchmark/README.md)).
 
 ---
@@ -62,8 +63,15 @@ Both the signatures and the key exchange are post-quantum, so traffic recorded t
 5. **Message 4 (Server Verdict, 40 B)** `["AUTH_OK\n"] [32B HMAC(K_confirm, "VPN-v1|SERVER-CONFIRM|" || H_cli)]`, or `"AUTH_NO\n"` (8 B) if the client proof fails.
 6. **AES-256-GCM Data Tunnel** keyed from `K_session`:
    * A separate key for each direction (HKDF-Expand): `K_c2s = HMAC-SHA256(K_session, "VPN-v1|TUNNEL|C2S" || 0x01)` and `K_s2c = HMAC-SHA256(K_session, "VPN-v1|TUNNEL|S2C" || 0x01)`.
-   * Frame `[2B LEN][8B SEQ][ciphertext][16B tag]`. The nonce is `DIR (4B) || SEQ (8B)` and the AAD is `LEN || SEQ`, so the header is authenticated too. The maximum plaintext is 1,024 B per frame.
+   * Frame `[2B LEN][8B SEQ][ciphertext][16B tag]`. The nonce is `DIR (4B) || SEQ (8B)` and the AAD is `LEN || SEQ`, so the header is authenticated too.
+   * Plaintext of every frame: `[1B TYPE][message]`, where TYPE is `0x01` DATA, `0x02` REKEY_REQ or `0x03` REKEY_RESP. Maximum 1,023 B of message per frame.
    * `SEQ` starts at 0 and must increase by exactly 1. Any tampered, replayed, reordered or oversized frame closes **that** session.
+7. **In-Tunnel Rekeying** (the keys are replaced regularly without reconnecting):
+   * **When:** the ESP32 rekeys after **100 messages or 5 minutes** with the same keys (`REKEY_AFTER_MESSAGES` / `REKEY_AFTER_MS` in `config.h`; set it to e.g. 10 for a live demo).
+   * **How:** a **fresh ML-KEM-512 exchange inside the encrypted tunnel**. The ESP32 sends `REKEY_REQ = [epoch n+1][800 B ML-KEM-512 encapsulation key]` (831 B frame); the gateway answers with `REKEY_RESP = [epoch n+1][768 B ML-KEM-512 ciphertext]` (799 B frame). Both messages use the old keys, and the ESP32 pauses its pings until the answer arrives.
+   * **New keys:** `PRK = HMAC-SHA256(K_session_old, SS_new)`, then `K_session = HMAC-SHA256(PRK, "VPN-v1|REKEY" || epoch || 0x01)`, then new `K_c2s` / `K_s2c` as above. `SEQ` restarts at 0 in both directions and the old keys are wiped.
+   * **Why it is safe:** the rekey travels inside the authenticated tunnel, so nobody else can trigger one, and mixing in the old key binds the new keys to this session. A key captured later only exposes traffic of its own epoch (forward secrecy inside one connection).
+   * **gateway policy (per device):** a device that sends more than **200 messages** or keeps a key longer than **10 minutes** without rekeying, asks for a rekey within **5 s** of the last one, or sends a wrong epoch / bad key share is disconnected. Only that device is affected.
 
 ### ML-KEM-512 object sizes (FIPS 203)
 
@@ -90,6 +98,7 @@ Every ESP32 runs in its **own gateway thread**, so a problem with one device aff
 | Device removed from `authorized_devices.json` while connected | Only that device is disconnected (checked every 5 s) |
 | `authorized_devices.json` saved half-way or with a typo | The last valid allowlist is kept; nobody is disconnected |
 | Tampered / replayed / oversized tunnel frame | Only that session is closed |
+| Device skips rekeying (over 200 messages or 10 min per key), rekeys too often, or sends a bad rekey | Only that session is closed |
 | Too many connections | 8 handshakes at once, 2 per IP, 5 new connections per IP per 10 s; extra connections are refused |
 | An error while starting one connection | That connection is refused; the server and the other tunnels keep running |
 
@@ -142,6 +151,7 @@ On first boot each board creates its ML-DSA-44 key and keeps it in NVS flash (`v
 
 * **Cross-implementation check**: mlkem-native `keypair_derand` / `enc_derand` / `dec`, including implicit rejection on a tampered `ct`, matches the independent `kyber-py` FIPS 203 implementation byte for byte over 25 random seeds.
 * **Same keys as before**: the offline-built `libmldsa44.so` derives the same ML-DSA-44 gateway key from `SERVER_PRIVATE_SEED_HEX` as the earlier library, so the pinned key in `config.h` is unchanged.
+* **Rekey tests against the real gateway**, 12/12 passed: two rekeys in a row with data working after each; a frame sealed with the pre-rekey key is rejected; a wrong epoch, a rekey within the 5 s minimum, and a malformed ML-KEM key each close only that session; the 200-message and key-age limits close a device that does not rekey, while a device that rekeys in time stays connected.
 * **Multi-device tests against the real gateway** (Python clients that mirror `AuthManager.cpp`, with different source IPs), 20/20 passed:
   * 3 devices complete the handshake at once and exchange encrypted pings.
   * Unregistered ID, wrong key, bad HMAC tag, garbage and malformed `ek` are rejected, and the other tunnels keep working.

@@ -330,6 +330,10 @@ void GatewaySession::runTunnel() {
       logLine("[%s] [REVOKED] Device no longer authorized. Closing tunnel.", _deviceId);
       return;
     }
+    if (_tunnel.keyAgeMs() > REKEY_MAX_MS) {
+      logLine("[%s] [REKEY-POLICY] Key older than %lu s and no rekey. Closing session.", _deviceId, REKEY_MAX_MS / 1000);
+      return;
+    }
     if (millis() - lastRx >= TUNNEL_IDLE_TIMEOUT_MS) {
       logLine("[%s] [TUNNEL TIMEOUT] Idle for %lu s. Closing session.", _deviceId, TUNNEL_IDLE_TIMEOUT_MS / 1000);
       return;
@@ -354,15 +358,31 @@ void GatewaySession::runTunnel() {
     while (offset < (size_t)r) {
       size_t used = 0, msgLen = 0;
       uint64_t seq = 0;
-      int status = _tunnel.consume(chunk + offset, r - offset, &used, _plain, &msgLen, &seq);
+      uint8_t type = 0;
+      int status = _tunnel.consume(chunk + offset, r - offset, &used, &type, _plain, &msgLen, &seq);
       offset += used;
       if (status < 0) {
         // Tampered, replayed, reordered or oversized frame: close ONLY this session
         logLine("[%s] [TUNNEL-ERROR] %s. Dropping session.", _deviceId, _tunnel.lastError());
         return;
       }
-      if (status == 1 && !handleMessage(_plain, msgLen, seq)) {
-        return;
+      if (status == 1) {
+        bool ok;
+        if (type == GatewayTunnel::MSG_REKEY_REQ) {
+          ok = handleRekey(_plain, msgLen);                 // Always allowed: it is the fix
+        } else if (type == GatewayTunnel::MSG_DATA) {
+          // Rekey policy: over the per-key message limit => the message is not answered
+          if (_tunnel.framesReceived() > REKEY_MAX_MESSAGES) {
+            logLine("[%s] [REKEY-POLICY] %llu messages with one key (limit %llu). Closing session.", _deviceId,
+                    (unsigned long long)_tunnel.framesReceived(), (unsigned long long)REKEY_MAX_MESSAGES);
+            return;
+          }
+          ok = handleMessage(_plain, msgLen, seq);
+        } else {
+          logLine("[%s] [TUNNEL-ERROR] Unexpected message type 0x%02X. Dropping session.", _deviceId, type);
+          ok = false;
+        }
+        if (!ok) return;
       }
       if (status == 0) break;   // Need more bytes for the current frame
     }
@@ -372,28 +392,77 @@ void GatewaySession::runTunnel() {
 bool GatewaySession::handleMessage(const uint8_t* msg, size_t len, uint64_t seq) {
   char ctPreview[32];
   hexPreview(_tunnel.lastFrameCiphertext(), len, ctPreview, sizeof(ctPreview));
-  logLine("[%s] <- RECEIVED encrypted msg #%llu (%u bytes over Wi-Fi)\n"
+  logLine("[%s] <- RECEIVED encrypted msg #%llu (%u bytes over Wi-Fi, key epoch %lu)\n"
           "     ciphertext : %s...  (unreadable without the key)\n"
           "     decrypted  : \"%.*s\"  (GCM tag VALID)",
-          _deviceId, (unsigned long long)seq, (unsigned)(GatewayTunnel::HEADER_SIZE + len + GatewayTunnel::TAG_SIZE),
-          ctPreview, (int)(len < 120 ? len : 120), (const char*)msg);
+          _deviceId, (unsigned long long)seq, (unsigned)(GatewayTunnel::HEADER_SIZE + 1 + len + GatewayTunnel::TAG_SIZE),
+          (unsigned long)_tunnel.epoch(), ctPreview, (int)(len < 120 ? len : 120), (const char*)msg);
 
   // Reply = "SERVER_ACK_FOR_<id>: <message>", cut to one frame
   int prefix = snprintf((char*)_reply, sizeof(_reply), "SERVER_ACK_FOR_%s: ", _deviceId);
   size_t replyLen = (size_t)prefix;
   size_t copy = len;
-  if (replyLen + copy > sizeof(_reply)) copy = sizeof(_reply) - replyLen;
+  if (replyLen + copy > GatewayTunnel::MAX_PAYLOAD) copy = GatewayTunnel::MAX_PAYLOAD - replyLen;
   memcpy(_reply + replyLen, msg, copy);
   replyLen += copy;
 
-  size_t frameLen = _tunnel.seal(_reply, replyLen, _frame);
+  size_t frameLen = _tunnel.seal(GatewayTunnel::MSG_DATA, _reply, replyLen, _frame);
   if (frameLen == 0 || !sendAll(_frame, frameLen)) {
     logLine("[%s] [TUNNEL-ERROR] Could not send encrypted reply. Closing session.", _deviceId);
     return false;
   }
-  hexPreview(_frame + GatewayTunnel::HEADER_SIZE, replyLen, ctPreview, sizeof(ctPreview));
+  hexPreview(_frame + GatewayTunnel::HEADER_SIZE, replyLen + 1, ctPreview, sizeof(ctPreview));
   logLine("[%s] -> SENT encrypted reply msg #%llu (%u bytes over Wi-Fi)\n"
           "     ciphertext : %s...",
           _deviceId, (unsigned long long)_tunnel.lastTxSeq(), (unsigned)frameLen, ctPreview);
+  return true;
+}
+
+// REKEY_REQ = [4B epoch (BE)] [32B client X25519 key] -> fresh X25519 exchange inside the tunnel.
+// REKEY_RESP = [4B epoch] [32B gateway X25519 key] is sent with the OLD keys, then both
+// directions switch to the keys of the new epoch.
+bool GatewaySession::handleRekey(const uint8_t* payload, size_t len) {
+  if (len != 4 + 32) {
+    logLine("[%s] [TUNNEL-ERROR] Malformed REKEY_REQ (%u bytes). Dropping session.", _deviceId, (unsigned)len);
+    return false;
+  }
+  const uint32_t epoch = ((uint32_t)payload[0] << 24) | ((uint32_t)payload[1] << 16) |
+                         ((uint32_t)payload[2] << 8) | payload[3];
+  if (epoch != _tunnel.epoch() + 1) {
+    logLine("[%s] [TUNNEL-ERROR] REKEY_REQ for epoch %lu, expected %lu. Dropping session.", _deviceId,
+            (unsigned long)epoch, (unsigned long)(_tunnel.epoch() + 1));
+    return false;
+  }
+  if (_tunnel.keyAgeMs() < REKEY_MIN_INTERVAL_MS) {
+    logLine("[%s] [REKEY-POLICY] Rekey requested after only %lu ms (minimum %lu ms). Dropping session.", _deviceId,
+            _tunnel.keyAgeMs(), REKEY_MIN_INTERVAL_MS);
+    return false;
+  }
+
+  uint8_t sk[32], resp[4 + 32], ss[32];
+  randombytes_buf(sk, sizeof(sk));
+  memcpy(resp, payload, 4);
+  crypto_scalarmult_base(resp + 4, sk);
+  bool ok = crypto_scalarmult(ss, sk, payload + 4) == 0;   // -1 for a low-order client key
+  sodium_memzero(sk, sizeof(sk));
+  if (!ok) {
+    logLine("[%s] [TUNNEL-ERROR] Invalid X25519 key in REKEY_REQ. Dropping session.", _deviceId);
+    sodium_memzero(ss, sizeof(ss));
+    return false;
+  }
+
+  const uint64_t oldCount = _tunnel.framesReceived();
+  size_t frameLen = _tunnel.seal(GatewayTunnel::MSG_REKEY_RESP, resp, sizeof(resp), _frame);  // OLD keys
+  ok = frameLen > 0 && sendAll(_frame, frameLen) && _tunnel.rekey(ss, epoch);
+  sodium_memzero(ss, sizeof(ss));
+  if (!ok) {
+    logLine("[%s] [TUNNEL-ERROR] Rekey failed. Closing session.", _deviceId);
+    return false;
+  }
+  logLine("[%s] [REKEY] Epoch %lu: fresh X25519 exchange inside the tunnel after %llu messages.\n"
+          "     new K_c2s : %02X%02X%02X%02X%02X%02X%02X%02X...   old keys wiped, msg # restarts at 0",
+          _deviceId, (unsigned long)epoch, (unsigned long long)oldCount,
+          _tunnel.keyC2S()[0], _tunnel.keyC2S()[1], _tunnel.keyC2S()[2], _tunnel.keyC2S()[3],
+          _tunnel.keyC2S()[4], _tunnel.keyC2S()[5], _tunnel.keyC2S()[6], _tunnel.keyC2S()[7]);
   return true;
 }

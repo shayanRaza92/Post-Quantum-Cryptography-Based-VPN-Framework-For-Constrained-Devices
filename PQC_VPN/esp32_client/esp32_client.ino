@@ -31,6 +31,61 @@ const unsigned long RECONNECT_DELAY_MIN_MS = 3000;
 const unsigned long RECONNECT_DELAY_MAX_MS = 30000;
 unsigned long       reconnectDelayMs       = RECONNECT_DELAY_MIN_MS;
 
+// --- In-Tunnel Rekeying State (fresh ML-KEM-512 exchange inside the encrypted tunnel) ---
+bool           rekeyPending   = false;                   // REKEY_REQ sent, waiting for REKEY_RESP
+unsigned long  rekeyStartedMs = 0;
+static uint8_t rekeyEk[MLKEM512::PUBLIC_KEY_SIZE];       // Ephemeral encapsulation key (sent in REKEY_REQ)
+static uint8_t rekeyDk[MLKEM512::SECRET_KEY_SIZE];       // Matching decapsulation key (wiped after use)
+
+void cancelRekey() {
+  rekeyPending = false;
+  sodium_memzero(rekeyDk, sizeof(rekeyDk));
+}
+
+// Sends REKEY_REQ = [4B new epoch (BE)] [800B fresh ML-KEM-512 encapsulation key]
+bool startRekey() {
+  const uint32_t next = tunnel.epoch() + 1;
+  Serial.printf("\n[REKEY] %llu messages / %lu s with the current keys -> rekey to epoch %lu (fresh ML-KEM-512 keypair)\n",
+                (unsigned long long)tunnel.framesSent(), tunnel.keyAgeMs() / 1000, (unsigned long)next);
+  if (MLKEM512::generateKeypair(rekeyEk, rekeyDk) != 0) {
+    Serial.println("[REKEY] ML-KEM-512 key generation failed.");
+    cancelRekey();
+    return false;
+  }
+  static uint8_t payload[4 + MLKEM512::PUBLIC_KEY_SIZE];
+  payload[0] = (uint8_t)(next >> 24); payload[1] = (uint8_t)(next >> 16);
+  payload[2] = (uint8_t)(next >> 8);  payload[3] = (uint8_t)next;
+  memcpy(payload + 4, rekeyEk, MLKEM512::PUBLIC_KEY_SIZE);
+  if (!tunnel.sendTyped(SecureTunnel::MSG_REKEY_REQ, payload, sizeof(payload))) {
+    cancelRekey();
+    return false;
+  }
+  rekeyPending = true;
+  rekeyStartedMs = millis();
+  return true;
+}
+
+// Handles REKEY_RESP = [4B epoch (BE)] [768B ML-KEM-512 ciphertext]
+bool finishRekey(const uint8_t* payload, size_t len) {
+  if (!rekeyPending || len != 4 + MLKEM512::CIPHERTEXT_SIZE) {
+    Serial.println("[REKEY] Unexpected REKEY_RESP.");
+    cancelRekey();
+    return false;
+  }
+  const uint32_t epoch = ((uint32_t)payload[0] << 24) | ((uint32_t)payload[1] << 16) |
+                         ((uint32_t)payload[2] << 8) | payload[3];
+  if (epoch != tunnel.epoch() + 1) {
+    Serial.printf("[REKEY] Wrong epoch in REKEY_RESP (%lu).\n", (unsigned long)epoch);
+    cancelRekey();
+    return false;
+  }
+  uint8_t ss[MLKEM512::SHARED_SECRET_SIZE];
+  bool ok = MLKEM512::decapsulate(ss, payload + 4, rekeyDk) == 0 && tunnel.rekey(ss, epoch);
+  sodium_memzero(ss, sizeof(ss));
+  cancelRekey();
+  return ok;
+}
+
 
 // --- Connects to the laptop server over TCP and runs the PQC handshake. Returns true on success ---
 bool connectToGatewayServer() {
@@ -111,6 +166,7 @@ void vpnClientTask(void* pvParameters) {
         Serial.println("[WIFI] Wi-Fi connection lost. Waiting for it to come back...");
         networkClient.stop();
         tunnel.end();
+        cancelRekey();
         isVpnAuthenticated = false;
         reconnectDelayMs = RECONNECT_DELAY_MIN_MS;
       }
@@ -125,6 +181,7 @@ void vpnClientTask(void* pvParameters) {
       }
       isVpnAuthenticated = false;
       tunnel.end();
+      cancelRekey();
       vTaskDelay(pdMS_TO_TICKS(reconnectDelayMs)); // Back off before retrying
       if (connectToGatewayServer()) {
         reconnectDelayMs = RECONNECT_DELAY_MIN_MS;                                // Success: reset backoff
@@ -135,7 +192,25 @@ void vpnClientTask(void* pvParameters) {
       continue;
     }
 
-    if (millis() - lastTunnelMessageTime >= 1500) {
+    // --- Rekey policy: fresh keys after REKEY_AFTER_MESSAGES messages or REKEY_AFTER_MS ---
+    if (rekeyPending && millis() - rekeyStartedMs > REKEY_RESPONSE_TIMEOUT_MS) {
+      Serial.println("[REKEY] Gateway did not answer the rekey in time. Closing connection.");
+      cancelRekey();
+      networkClient.stop();
+      isVpnAuthenticated = false;
+      continue;
+    }
+    if (!rekeyPending && (tunnel.framesSent() >= REKEY_AFTER_MESSAGES || tunnel.keyAgeMs() >= REKEY_AFTER_MS)) {
+      if (!startRekey()) {
+        Serial.println("[REKEY] Could not start rekey. Closing connection.");
+        networkClient.stop();
+        isVpnAuthenticated = false;
+        continue;
+      }
+    }
+
+    // Pings pause while a rekey is in progress, so no message is ever sent with keys about to change
+    if (!rekeyPending && millis() - lastTunnelMessageTime >= 1500) {
       lastTunnelMessageTime = millis();
       pingSequenceNumber++;
 
@@ -151,7 +226,11 @@ void vpnClientTask(void* pvParameters) {
     static uint8_t rxPlain[SecureTunnel::MAX_PLAINTEXT];
     int n;
     while ((n = tunnel.poll(rxPlain, sizeof(rxPlain))) > 0) {
-      // Decrypted, authenticated reply already printed by SecureTunnel::poll
+      // DATA replies are already printed by SecureTunnel::poll; REKEY_RESP switches the keys
+      if (tunnel.lastType() == SecureTunnel::MSG_REKEY_RESP && !finishRekey(rxPlain, n)) {
+        n = -1;
+        break;
+      }
     }
     if (n < 0) {
       Serial.println("[TUNNEL] Integrity/replay check failed. Closing connection.");

@@ -24,6 +24,59 @@ const unsigned long RECONNECT_DELAY_MIN_MS = 3000;
 const unsigned long RECONNECT_DELAY_MAX_MS = 30000;
 unsigned long       reconnectDelayMs       = RECONNECT_DELAY_MIN_MS;
 
+// --- In-Tunnel Rekeying State (fresh X25519 exchange inside the encrypted tunnel) ---
+bool          rekeyPending   = false;   // REKEY_REQ sent, waiting for REKEY_RESP
+unsigned long rekeyStartedMs = 0;
+uint8_t       rekeySk[32];              // Ephemeral X25519 private key for this rekey (wiped after use)
+uint8_t       rekeyPk[32];              // Matching public key (sent in REKEY_REQ)
+
+void cancelRekey() {
+  rekeyPending = false;
+  sodium_memzero(rekeySk, sizeof(rekeySk));
+}
+
+// Sends REKEY_REQ = [4B new epoch (BE)] [32B fresh X25519 public key]
+bool startRekey() {
+  const uint32_t next = tunnel.epoch() + 1;
+  Serial.printf("\n[REKEY] %llu messages / %lu s with the current keys -> rekey to epoch %lu (fresh X25519 keypair)\n",
+                (unsigned long long)tunnel.framesSent(), tunnel.keyAgeMs() / 1000, (unsigned long)next);
+  randombytes_buf(rekeySk, sizeof(rekeySk));
+  crypto_scalarmult_base(rekeyPk, rekeySk);
+  uint8_t payload[4 + 32];
+  payload[0] = (uint8_t)(next >> 24); payload[1] = (uint8_t)(next >> 16);
+  payload[2] = (uint8_t)(next >> 8);  payload[3] = (uint8_t)next;
+  memcpy(payload + 4, rekeyPk, 32);
+  if (!tunnel.sendTyped(SecureTunnel::MSG_REKEY_REQ, payload, sizeof(payload))) {
+    cancelRekey();
+    return false;
+  }
+  rekeyPending = true;
+  rekeyStartedMs = millis();
+  return true;
+}
+
+// Handles REKEY_RESP = [4B epoch (BE)] [32B gateway X25519 public key]
+bool finishRekey(const uint8_t* payload, size_t len) {
+  if (!rekeyPending || len != 4 + 32) {
+    Serial.println("[REKEY] Unexpected REKEY_RESP.");
+    cancelRekey();
+    return false;
+  }
+  const uint32_t epoch = ((uint32_t)payload[0] << 24) | ((uint32_t)payload[1] << 16) |
+                         ((uint32_t)payload[2] << 8) | payload[3];
+  if (epoch != tunnel.epoch() + 1) {
+    Serial.printf("[REKEY] Wrong epoch in REKEY_RESP (%lu).\n", (unsigned long)epoch);
+    cancelRekey();
+    return false;
+  }
+  uint8_t ss[32];
+  // crypto_scalarmult() returns -1 for a low-order (all-zero) result
+  bool ok = crypto_scalarmult(ss, rekeySk, payload + 4) == 0 && tunnel.rekey(ss, epoch);
+  sodium_memzero(ss, sizeof(ss));
+  cancelRekey();
+  return ok;
+}
+
 
 // --- Connects to the ESP32 gateway over TCP and runs the handshake. Returns true on success ---
 bool connectToGatewayServer() {
@@ -105,6 +158,7 @@ void loop() {
       Serial.println("[WIFI] Lost connection to the gateway's Wi-Fi. Waiting for it to come back...");
       networkClient.stop();
       tunnel.end();
+      cancelRekey();
       isVpnAuthenticated = false;
       reconnectDelayMs = RECONNECT_DELAY_MIN_MS;
     }
@@ -120,6 +174,7 @@ void loop() {
     }
     isVpnAuthenticated = false; // Mark as unauthenticated
     tunnel.end();               // Wipe the old session's tunnel keys and counters
+    cancelRekey();
     delay(reconnectDelayMs);    // Back off before retrying
     if (connectToGatewayServer()) {
       reconnectDelayMs = RECONNECT_DELAY_MIN_MS;            // Success: reset backoff
@@ -130,8 +185,25 @@ void loop() {
     return;                     // Restart loop
   }
 
-  // Send an encrypted heartbeat ping every 1.5 seconds (1500 milliseconds)
-  if (millis() - lastTunnelMessageTime >= 1500) {
+  // --- Rekey policy: fresh keys after REKEY_AFTER_MESSAGES messages or REKEY_AFTER_MS ---
+  if (rekeyPending && millis() - rekeyStartedMs > REKEY_RESPONSE_TIMEOUT_MS) {
+    Serial.println("[REKEY] Gateway did not answer the rekey in time. Closing connection.");
+    cancelRekey();
+    networkClient.stop();
+    isVpnAuthenticated = false;
+    return;
+  }
+  if (!rekeyPending && (tunnel.framesSent() >= REKEY_AFTER_MESSAGES || tunnel.keyAgeMs() >= REKEY_AFTER_MS)) {
+    if (!startRekey()) {
+      Serial.println("[REKEY] Could not start rekey. Closing connection.");
+      networkClient.stop();
+      isVpnAuthenticated = false;
+      return;
+    }
+  }
+
+  // Send an encrypted heartbeat ping every 1.5 seconds (paused while a rekey is in progress)
+  if (!rekeyPending && millis() - lastTunnelMessageTime >= 1500) {
     lastTunnelMessageTime = millis(); // Record the current timestamp
     pingSequenceNumber++;             // Increment the ping sequence number
 
@@ -148,7 +220,11 @@ void loop() {
   static uint8_t rxPlain[SecureTunnel::MAX_PLAINTEXT];
   int n;
   while ((n = tunnel.poll(rxPlain, sizeof(rxPlain))) > 0) {
-    // Decrypted, authenticated reply already printed by SecureTunnel::poll
+    // DATA replies are already printed by SecureTunnel::poll; REKEY_RESP switches the keys
+    if (tunnel.lastType() == SecureTunnel::MSG_REKEY_RESP && !finishRekey(rxPlain, n)) {
+      n = -1;
+      break;
+    }
   }
   if (n < 0) {
     Serial.println("[TUNNEL] Integrity/replay check failed. Closing connection.");
