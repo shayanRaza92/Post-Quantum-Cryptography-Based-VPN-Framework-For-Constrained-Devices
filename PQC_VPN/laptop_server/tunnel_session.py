@@ -1,12 +1,16 @@
 import socket
+import textwrap
 import time
 import re
 import hmac
 import hashlib
+from secure_tunnel import SecureTunnel, TunnelError, MAX_PLAINTEXT
 from config import (
     PROTOCOL_VERSION,
     ALGORITHM_ID,
     SIGNATURE_LENGTH,
+    KEM_PUBLIC_KEY_LENGTH,
+    KEM_CIPHERTEXT_LENGTH,
     MSG1_CLIENT_HELLO_SIZE,
     MSG2_SERVER_PROOF_SIZE,
     MSG3_CLIENT_PROOF_SIZE,
@@ -18,8 +22,13 @@ from config import (
     CLIENT_CONFIRM_LABEL,
     SERVER_CONFIRM_LABEL,
     HANDSHAKE_TIMEOUT,
-    TUNNEL_IDLE_TIMEOUT
+    TUNNEL_IDLE_TIMEOUT,
+    ALLOWLIST_RECHECK_INTERVAL,
+    TUNNEL_POLL_INTERVAL
 )
+# Thread-safe print: each session's handshake log is printed as one uninterrupted block,
+# so the output of several ESP32s connecting at once never gets mixed together.
+from console import safe_print as print, log_block
 
 
 def print_hex_64_box(data_bytes):
@@ -48,6 +57,64 @@ def print_mldsa_sig_box(sig_bytes):
     print("| ... [Bytes 0032..2387 : Masked Response Vector z (2356 Bytes omitted)] ...  |")
     print("| [Byte 2388..2419 : PolyNorm Hint Vector h Tail (32 Bytes)]                  |")
     print_hex_64_box(sig_bytes[2388:2420])
+
+
+def print_phase(number, title, description):
+    """Beginner-friendly banner marking each stage of the handshake."""
+    print("\n" + "=" * 79)
+    print(f" PHASE {number} of 5 : {title}")
+    print(f" {description}")
+    print("=" * 79)
+
+
+def print_note(text):
+    """Plain-English explanation printed after a technical step."""
+    print("  >> In plain words:")
+    for line in textwrap.wrap(text, 71):
+        print(f"     {line}")
+    print()
+
+
+SUMMARY_LINES = ['SECURE CONNECTION ESTABLISHED - WHAT JUST HAPPENED', '', '[1] Who are you?  ML-DSA-44 : both sides proved their identity', '[2] Shared secret ML-KEM-512: agreed on a 32-byte key K without sending it', '[3] Session keys  HKDF-256  : turned K into the keys used for encryption', '[4] Double check  HMAC-256  : both sides confirmed they hold the same keys', '[5] From now on   AES-256-GCM: every message is encrypted + tamper-proof', '', 'ML-DSA-44 and ML-KEM-512 are POST-QUANTUM: designed to resist attacks', 'from future quantum computers.']
+
+
+def print_summary():
+    print("#" * 79)
+    for line in SUMMARY_LINES:
+        print(f"# {line:<75} #")
+    print("#" * 79 + "\n")
+
+
+def print_mlkem_ek_box(ek_bytes):
+    """Prints 800-byte ML-KEM-512 encapsulation key (ByteEncode12(t_hat) || rho) in a 79-char box."""
+    print("| [Byte 000..031 : ByteEncode12(t_hat) Head (32 Bytes)]                       |")
+    print_hex_64_box(ek_bytes[:32])
+    print("| ... [Bytes 032..767 : NTT Polynomial Vector t_hat (736 Bytes omitted)] ...  |")
+    print("| [Byte 768..799 : Matrix Expansion Seed rho (32 Bytes)]                      |")
+    print_hex_64_box(ek_bytes[768:800])
+
+
+def print_mlkem_ct_box(ct_bytes):
+    """Prints 768-byte ML-KEM-512 ciphertext (c1 = Compress_10(u) || c2 = Compress_4(v)) in a 79-char box."""
+    print("| [Byte 000..031 : c1 = Compress_10(u) Head (32 Bytes)]                       |")
+    print_hex_64_box(ct_bytes[:32])
+    print("| ... [Bytes 032..735 : Compressed u || Polynomial v (704 Bytes omitted)] ... |")
+    print("| [Byte 736..767 : c2 = Compress_4(v) Tail (32 Bytes)]                        |")
+    print_hex_64_box(ct_bytes[736:768])
+
+
+def server_transcript_rows(label, msg1, device_id, server_nonce, kem_ct):
+    """Field rows shared by the Server Transcript (1,664 B) and Client Transcript (4,084 B) tables."""
+    return [
+        ("Domain Prefix", "Byte 0..13", "14 Bytes", label),
+        ("Protocol Version", "Byte 14", "1 Byte", f"0x{msg1[0]:02X}"),
+        ("Algorithm ID", "Byte 15", "1 Byte", f"0x{msg1[1]:02X} (MLDSA+MLKEM)"),
+        ("Device ID (Zero-Padded)", "Byte 16..31", "16 Bytes", f"\"{device_id}\""),
+        ("Client Nonce [N_cli]", "Byte 32..63", "32 Bytes", preview(msg1[18:50])),
+        ("Client KEM Key [ek_cli]", "Byte 64..863", "800 Bytes", preview(msg1[50:850])),
+        ("Server Nonce [N_srv]", "Byte 864..895", "32 Bytes", preview(server_nonce)),
+        ("KEM Ciphertext [ct]", "Byte 896-1663", "768 Bytes", preview(kem_ct)),
+    ]
 
 
 def print_transcript_table(title, rows, total_len):
@@ -80,11 +147,12 @@ def short_preview(data):
 class VpnSession:
     """
     Manages the lifecycle of an ESP32 connection:
-    4-Message Handshake with ML-DSA-44 Mutual Authentication, Ephemeral X25519 Key Exchange
+    4-Message Handshake with ML-DSA-44 Mutual Authentication, Ephemeral ML-KEM-512 Key Encapsulation
     & HMAC-SHA256 Key Confirmation -> Data Tunnel.
     """
 
-    def __init__(self, connection, client_address, crypto_engine, allowlist, handshake_slot=None):
+    def __init__(self, connection, client_address, crypto_engine, allowlist,
+                 handshake_slot=None, registry=None):
         self.connection = connection
         self.client_address = client_address
         self.crypto = crypto_engine
@@ -93,6 +161,22 @@ class VpnSession:
         self.handshake_slot = handshake_slot
         self.k_confirm = None
         self.k_session = None
+        self.registry = registry            # Shared SessionRegistry (one live tunnel per device)
+        self.device_id = None               # Known once MSG 1 has been parsed
+        self.registered_pubkey = None       # Allowlist key used to authenticate this session
+        self._terminate_reason = None       # Set when another thread closes this session
+
+    def terminate(self, reason):
+        """Called from ANOTHER thread (registry) to close this session; wakes its blocked recv()."""
+        self._terminate_reason = reason
+        try:
+            self.connection.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+
+    def _log_label(self):
+        ip, port = self.client_address[0], self.client_address[1]
+        return f"{self.device_id or 'unknown-device'} @ {ip}:{port}"
 
     def receive_exact(self, expected_byte_count):
         """Reads exactly expected_byte_count bytes with deadline enforcement."""
@@ -114,10 +198,10 @@ class VpnSession:
         return bytes(buffer)
 
     # -------------------------------------------------------------------------
-    # MESSAGE 1: CLIENT HELLO RECEIVER (82 BYTES)
+    # MESSAGE 1: CLIENT HELLO RECEIVER (850 BYTES)
     # -------------------------------------------------------------------------
     def _receive_client_hello(self, client_ip):
-        """Reads 82-byte Client Hello packet: [Ver] [Alg] [ID (16B)] [Nonce (32B)] [X25519_pk (32B)]."""
+        """Reads 850-byte Client Hello packet: [Ver] [Alg] [ID (16B)] [Nonce (32B)] [ML-KEM-512 ek (800B)]."""
         raw = self.receive_exact(MSG1_CLIENT_HELLO_SIZE)
         if not raw:
             print(f"[{client_ip}] [ERROR] Disconnected during Client Hello.")
@@ -127,7 +211,7 @@ class VpnSession:
         alg_id = raw[1]
         id_field = raw[2:18]
         client_nonce = raw[18:50]
-        client_eph_pk = raw[50:82]
+        client_kem_ek = raw[50:50 + KEM_PUBLIC_KEY_LENGTH]
 
         if version != PROTOCOL_VERSION or alg_id != ALGORITHM_ID:
             print(f"[{client_ip}] [AUTH-FAIL] Invalid Ver (0x{version:02X}) or AlgID (0x{alg_id:02X})")
@@ -138,25 +222,28 @@ class VpnSession:
             print(f"[{client_ip}] [AUTH-FAIL] Malformed Device ID field: {id_field!r}")
             return None, None, None, None, None
         device_id = raw_id.decode("ascii")
+        self.device_id = device_id  # Used in the log header for this session
 
         # Step 1-3: Client generation & transmission of MSG 1
+        print_phase(1, 'HELLO', 'The ESP32 says hello and sends a one-time ML-KEM-512 public key.')
         print(f"\n[Client] Generating 32-byte fresh Client Nonce [N_cli] via Hardware TRNG...")
-        print(f"[Client] Generating fresh Ephemeral X25519 Keypair [sk_cli_eph, PK_cli_eph] (Forward Secrecy)...")
-        print(f"[Client -> Server] Sending MSG 1 (Client Hello with X25519 Key Share)...")
+        print(f"[Client] Generating fresh Ephemeral ML-KEM-512 Keypair [dk_cli_eph, ek_cli_eph] (Forward Secrecy)...")
+        print(f"[Client -> Server] Sending MSG 1 (Client Hello with ML-KEM-512 Encapsulation Key)...")
         print("+-----------------------------------------------------------------------------+")
-        print("| MSG 1: CLIENT HELLO WIRE PACKET (82 Bytes / 656-bits)                       |")
+        print("| MSG 1: CLIENT HELLO WIRE PACKET (850 Bytes / 6800-bits)                     |")
         print("+-------------------+--------------------+------------------------------------+")
         print("| Version (8-bits)  | Alg ID (8-bits)    | Device ID (128-bits / 16 Bytes)    |")
-        print(f"| 0x{version:02X}              | 0x{alg_id:02X} (MLDSA44-PQC) | {device_id:<34} |")
+        print(f"| 0x{version:02X}              | 0x{alg_id:02X} (MLDSA+MLKEM) | {device_id:<34} |")
         print("+-------------------+--------------------+------------------------------------+")
         print("| Client Nonce [N_cli] (32 Bytes / 256-bits)                                  |")
         print_hex_64_box(client_nonce)
         print("+-----------------------------------------------------------------------------+")
-        print("| Client Ephemeral Public Key [PK_cli_eph] (32 Bytes / 256-bits)              |")
-        print_hex_64_box(client_eph_pk)
+        print("| Client Ephemeral ML-KEM-512 Encaps Key [ek_cli_eph] (800 Bytes / 6400-bits) |")
+        print_mlkem_ek_box(client_kem_ek)
         print("+-----------------------------------------------------------------------------+")
 
         # Step 4: Server allowlist authorization check
+        print_note("The ESP32 sent its name, a fresh random number, and a ONE-TIME ML-KEM-512 public key (800 bytes). Anyone may see this public key - it can only be used to LOCK a secret that only this ESP32 can unlock.")
         print(f"\n[Server] [AUTHORIZATION] Checking Device ID '{device_id}' against local allowlist database...")
         registered_pubkey_bytes = self.allowlist.get_device_public_key(device_id)
         if not registered_pubkey_bytes:
@@ -168,45 +255,47 @@ class VpnSession:
         print_mldsa_pubkey_box(registered_pubkey_bytes)
         print("+-----------------------------------------------------------------------------+\n")
 
-        return device_id, registered_pubkey_bytes, client_nonce, client_eph_pk, raw
+        return device_id, registered_pubkey_bytes, client_nonce, client_kem_ek, raw
 
     # -------------------------------------------------------------------------
-    # MESSAGE 2: SERVER PROOF TRANSMITTER (2,484 BYTES)
+    # MESSAGE 2: SERVER PROOF TRANSMITTER (3,220 BYTES)
     # -------------------------------------------------------------------------
-    def _send_server_proof(self, device_id, client_nonce, client_eph_pk, msg1):
+    def _send_server_proof(self, device_id, client_nonce, client_kem_ek, msg1):
         """
-        Generates 32B server nonce + fresh X25519 ephemeral keypair.
-        Constructs Server Transcript (160B), hashes it to H_srv (32B), signs H_srv with ML-DSA-44 (2,420B),
-        and sends 2,484B MSG 2 packet: [Server Nonce (32B)] [Server X25519 Share (32B)] [ML-DSA-44 Sig (2,420B)].
+        Generates 32B server nonce and encapsulates against the client's ephemeral ML-KEM-512 ek.
+        Constructs Server Transcript (1,664B), hashes it to H_srv (32B), signs H_srv with ML-DSA-44 (2,420B),
+        and sends 3,220B MSG 2 packet: [Server Nonce (32B)] [ML-KEM-512 ct (768B)] [ML-DSA-44 Sig (2,420B)].
         """
-        version = msg1[0]
-        alg_id = msg1[1]
-
         # Step 5: Server generates 32-byte Server Nonce
+        print_note("The laptop looked up 'esp32-01' in its list of allowed devices and found it, so the connection may continue.")
+        print_phase(2, 'LAPTOP REPLIES', 'The laptop makes a secret, locks it (ML-KEM-512), signs reply (ML-DSA-44).')
         print(f"[Server] Generating 32-byte fresh Server Nonce [N_srv] via CSPRNG...")
         server_nonce = self.crypto.generate_challenge()
 
-        # Step 6: Server generates Ephemeral X25519 Keypair
-        print(f"[Server] Generating fresh Ephemeral X25519 Keypair [sk_srv_eph, PK_srv_eph] (Forward Secrecy)...")
-        server_eph_sk, server_eph_pk = self.crypto.generate_ephemeral_keypair()
+        # Step 6: Server validates ek and encapsulates: (K, ct) = ML-KEM-512.Encaps(ek_cli_eph)
+        print(f"[Server] Validating ek_cli_eph (FIPS 203 modulus check) & Encapsulating: (K, ct) = ML-KEM-512.Encaps(ek_cli_eph)...")
+        try:
+            kem_ct, shared_secret = self.crypto.encapsulate(client_kem_ek)
+        except ValueError as e:
+            print(f"[Server] [KEX-FAIL] Invalid client ML-KEM-512 encapsulation key: {e}")
+            return None
+        print("+-----------------------------------------------------------------------------+")
+        print("| ML-KEM-512 Ciphertext [ct] (768 Bytes / 6144-bits)                          |")
+        print_mlkem_ct_box(kem_ct)
+        print("+-----------------------------------------------------------------------------+")
+        print("| ML-KEM-512 Shared Secret [K] (32 Bytes / 256-bits)                          |")
+        print_hex_64_box(shared_secret)
+        print("+-----------------------------------------------------------------------------+\n")
 
-        # Step 7: Server constructs Server Transcript (160 Bytes)
-        print(f"[Server] Constructing Server Transcript (label || MSG1 || N_srv || PK_srv_eph)...")
-        rows = [
-            ("Domain Prefix", "Byte 0..13", "14 Bytes", "\"VPN-v1|SERVER|\""),
-            ("Protocol Version", "Byte 14", "1 Byte", f"0x{version:02X}"),
-            ("Algorithm ID", "Byte 15", "1 Byte", f"0x{alg_id:02X} (MLDSA44-PQC)"),
-            ("Device ID (Zero-Padded)", "Byte 16..31", "16 Bytes", f"\"{device_id}\""),
-            ("Client Nonce [N_cli]", "Byte 32..63", "32 Bytes", preview(client_nonce)),
-            ("Client Eph PK [PK_cli_eph]", "Byte 64..95", "32 Bytes", preview(client_eph_pk)),
-            ("Server Nonce [N_srv]", "Byte 96..127", "32 Bytes", preview(server_nonce)),
-            ("Server Eph PK [PK_srv_eph]", "Byte 128..159", "32 Bytes", preview(server_eph_pk)),
-        ]
-        print_transcript_table("SERVER TRANSCRIPT PAYLOAD", rows, 160)
+        # Step 7: Server constructs Server Transcript (1,664 Bytes)
+        print_note("ML-KEM-512 step: the laptop created a random 32-byte secret K and LOCKED it inside the 768-byte ciphertext 'ct'. Only the ESP32's one-time private key can unlock it. K itself never travels over the network.")
+        print(f"[Server] Constructing Server Transcript (label || MSG1 || N_srv || ct)...")
+        rows = server_transcript_rows("\"VPN-v1|SERVER|\"", msg1, device_id, server_nonce, kem_ct)
+        print_transcript_table("SERVER TRANSCRIPT PAYLOAD", rows, 1664)
 
         # Step 8: Server computes SHA-256 Digest [H_srv] of Server Transcript
         print(f"\n[Server] Computing SHA-256 digest of Server Transcript...")
-        server_transcript_digest = self.crypto.build_server_transcript(msg1, server_nonce, server_eph_pk)
+        server_transcript_digest = self.crypto.build_server_transcript(msg1, server_nonce, kem_ct)
         print("+-----------------------------------------------------------------------------+")
         print("| SHA-256 Digest [H_srv] (32 Bytes / 256-bits)                                |")
         print_hex_64_box(server_transcript_digest)
@@ -214,34 +303,36 @@ class VpnSession:
 
         # Step 9: Server signs [H_srv] with Gateway ML-DSA-44 Private Key
         print(f"\n[Server] Signing digest [H_srv] with Gateway ML-DSA-44 secret key [sk_srv]...")
-        server_sig = self.crypto.sign_server_transcript(msg1, server_nonce, server_eph_pk)
+        server_sig = self.crypto.sign_server_transcript(msg1, server_nonce, kem_ct)
         print("+-----------------------------------------------------------------------------+")
         print("| Server ML-DSA-44 Signature [sigma_srv] (2420 Bytes / 19360-bits)            |")
         print_mldsa_sig_box(server_sig)
         print("+-----------------------------------------------------------------------------+")
 
-        # Step 10: Assemble and transmit MSG 2 (2,484 Bytes)
-        msg2 = server_nonce + server_eph_pk + server_sig
+        # Step 10: Assemble and transmit MSG 2 (3,220 Bytes)
+        msg2 = server_nonce + kem_ct + server_sig
         assert len(msg2) == MSG2_SERVER_PROOF_SIZE
         self.connection.sendall(msg2)
 
-        print(f"\n[Server -> Client] Sending MSG 2 (Server Proof with X25519 Key Share)...")
+        print_note("The laptop SIGNED a fingerprint (SHA-256 hash) of the whole conversation with its ML-DSA-44 private key, so the ESP32 can be sure the reply really comes from the laptop and was not changed by an attacker.")
+        print(f"\n[Server -> Client] Sending MSG 2 (Server Proof with ML-KEM-512 Ciphertext)...")
         print("+-----------------------------------------------------------------------------+")
-        print("| MSG 2: SERVER PROOF WIRE PACKET (2484 Bytes / 19872-bits)                   |")
+        print("| MSG 2: SERVER PROOF WIRE PACKET (3220 Bytes / 25760-bits)                   |")
         print("+-----------------------------------------------------------------------------+")
         print("| Server Nonce [N_srv] (32 Bytes / 256-bits)                                  |")
         print_hex_64_box(server_nonce)
         print("+-----------------------------------------------------------------------------+")
-        print("| Server Ephemeral Public Key [PK_srv_eph] (32 Bytes / 256-bits)              |")
-        print_hex_64_box(server_eph_pk)
+        print("| ML-KEM-512 Ciphertext [ct] (768 Bytes / 6144-bits)                          |")
+        print_mlkem_ct_box(kem_ct)
         print("+-----------------------------------------------------------------------------+")
         print("| Server ML-DSA-44 Signature [sigma_srv] (2420 Bytes / 19360-bits)            |")
         print_mldsa_sig_box(server_sig)
         print("+-----------------------------------------------------------------------------+")
 
         # Step 11: Client reconstructs Server Transcript
-        print(f"\n[Client] Reconstructing Server Transcript (label || MSG1 || N_srv || PK_srv_eph)...")
-        print_transcript_table("SERVER TRANSCRIPT PAYLOAD", rows, 160)
+        print_phase(3, 'ESP32 CHECKS & UNLOCKS', "The ESP32 checks the laptop's signature, then unlocks the shared secret.")
+        print(f"\n[Client] Reconstructing Server Transcript (label || MSG1 || N_srv || ct)...")
+        print_transcript_table("SERVER TRANSCRIPT PAYLOAD", rows, 1664)
 
         # Step 12: Client hashes Server Transcript
         print(f"\n[Client] Hashing Server Transcript (SHA-256)...")
@@ -270,25 +361,29 @@ class VpnSession:
         print("| Result : PASS -> Lattice commitment matches! Signature is FIPS 204 valid.   |")
         print("+-----------------------------------------------------------------------------+")
 
-        # Step 14: Both sides compute X25519 Diffie-Hellman Shared Secret
-        print(f"\n[Client & Server] Computing X25519 Diffie-Hellman Shared Secret [SS]...")
-        try:
-            shared_secret = self.crypto.compute_shared_secret(server_eph_sk, client_eph_pk)
-            if shared_secret == b"\x00" * 32:
-                raise ValueError("Low-order X25519 point produced all-zero shared secret")
-        except Exception as e:
-            print(f"[Server] [KEX-FAIL] Invalid client X25519 public key share: {e}")
-            return None
-
+        # Step 14: Client decapsulates ct with its ephemeral dk (performed on the ESP32)
+        print_note("The signature is valid, so the ESP32 now trusts it is talking to the real laptop (the laptop's public key is built into the ESP32 firmware).")
+        print(f"\n[Client] Decapsulating ML-KEM-512 Ciphertext: K = ML-KEM-512.Decaps(dk_cli_eph, ct)...")
         print("+-----------------------------------------------------------------------------+")
-        print("| X25519 Diffie-Hellman Shared Secret [SS] (32 Bytes / 256-bits)              |")
-        print_hex_64_box(shared_secret)
+        print("| ML-KEM-512 DECAPSULATION WORKING (FIPS 203 - IMPLICIT REJECTION)            |")
+        print("+-----------------------------------------------------------------------------+")
+        print(f"| Input 1: Ephemeral Decaps Key [dk_cli] (1632 B)  : {'(held only on ESP32)':<25}|")
+        print(f"| Input 2: Ciphertext c1 = Compress_10(u) (640 B)  : {short_preview(kem_ct[:640]):<25}|")
+        print(f"| Input 3: Ciphertext c2 = Compress_4(v) (128 B)   : {short_preview(kem_ct[640:]):<25}|")
+        print("+-----------------------------------------------------------------------------+")
+        print("| Step 1: Decrypt m' = K-PKE.Decrypt(dk_pke, ct) = Compress_1(v - s^T * u)    |")
+        print("| Step 2: Derive (K', r') = G(m' || H(ek)) using SHA3-512                     |")
+        print("| Step 3: Re-encrypt ct' = K-PKE.Encrypt(ek, m', r') and compare ct' == ct    |")
+        print("| Step 4: K = K' if equal, else implicit rejection K = J(z || ct) (SHAKE-256) |")
+        print("| Result : DONE -> Shared secret K recovered (confirmed by HMAC in MSG 3/4)   |")
         print("+-----------------------------------------------------------------------------+")
 
         # Step 15: Both sides derive Session Keys via HKDF-SHA256
+        print_note("The ESP32 UNLOCKED 'ct' with its one-time private key and got exactly the SAME 32-byte secret K as the laptop. The one-time private key is now erased, so past sessions stay safe even if the device is stolen later (forward secrecy).")
         print(f"\n[Client & Server] Deriving K_confirm and K_session via HKDF-SHA256 (RFC 5869)...")
         hkdf_salt = hashlib.sha256(client_nonce + server_nonce).digest()
         self.k_confirm, self.k_session = self.crypto.derive_session_keys(shared_secret, client_nonce, server_nonce)
+        shared_secret = None
         print("+-----------------------------------------------------------------------------+")
         print("| HKDF-SHA256 KEY SCHEDULE WORKING (RFC 5869)                                 |")
         print("+-----------------------------------------------------------------------------+")
@@ -320,30 +415,19 @@ class VpnSession:
         client_sig = raw[:SIGNATURE_LENGTH]
         client_confirm_tag = raw[SIGNATURE_LENGTH:MSG3_CLIENT_PROOF_SIZE]
 
-        version = msg1[0]
-        alg_id = msg1[1]
-        client_nonce = msg1[18:50]
-        client_eph_pk = msg1[50:82]
         server_nonce = msg2[0:32]
-        server_eph_pk = msg2[32:64]
-        server_sig = msg2[64:MSG2_SERVER_PROOF_SIZE]
+        kem_ct = msg2[32:32 + KEM_CIPHERTEXT_LENGTH]
+        server_sig = msg2[32 + KEM_CIPHERTEXT_LENGTH:MSG2_SERVER_PROOF_SIZE]
 
-        rows = [
-            ("Domain Prefix", "Byte 0..13", "14 Bytes", "\"VPN-v1|CLIENT|\""),
-            ("Protocol Version", "Byte 14", "1 Byte", f"0x{version:02X}"),
-            ("Algorithm ID", "Byte 15", "1 Byte", f"0x{alg_id:02X} (MLDSA44-PQC)"),
-            ("Device ID (Zero-Padded)", "Byte 16..31", "16 Bytes", f"\"{device_id}\""),
-            ("Client Nonce [N_cli]", "Byte 32..63", "32 Bytes", preview(client_nonce)),
-            ("Client Eph PK [PK_cli_eph]", "Byte 64..95", "32 Bytes", preview(client_eph_pk)),
-            ("Server Nonce [N_srv]", "Byte 96..127", "32 Bytes", preview(server_nonce)),
-            ("Server Eph PK [PK_srv_eph]", "Byte 128..159", "32 Bytes", preview(server_eph_pk)),
-            ("Server Sig [sigma_srv]", "Byte 160-2579", "2420 B", preview(server_sig)),
-        ]
+        rows = server_transcript_rows("\"VPN-v1|CLIENT|\"", msg1, device_id, server_nonce, kem_ct)
+        rows.append(("Server Sig [sigma_srv]", "1664..4083", "2420 B", preview(server_sig)))
         client_transcript_digest = self.crypto.build_client_transcript(msg1, msg2)
 
         # Step 16: Client constructs Client Transcript (2,580 Bytes)
+        print_note("Both sides turned K into two new keys: K_confirm (to prove both sides have the same keys) and K_session (to encrypt all data in the tunnel).")
+        print_phase(4, 'ESP32 PROVES ITSELF', 'The ESP32 signs the conversation and proves it holds the same keys.')
         print(f"[Client] Constructing Client Transcript (label || MSG1 || MSG2)...")
-        print_transcript_table("CLIENT TRANSCRIPT PAYLOAD", rows, 2580)
+        print_transcript_table("CLIENT TRANSCRIPT PAYLOAD", rows, 4084)
 
         # Step 17: Client hashes Client Transcript
         print(f"\n[Client] Hashing Client Transcript (SHA-256)...")
@@ -367,6 +451,7 @@ class VpnSession:
         print("+-----------------------------------------------------------------------------+")
 
         # Step 20: Client sends MSG 3 wire packet (2,452 Bytes)
+        print_note("The ESP32 signed the conversation with its own ML-DSA-44 key (proving WHO it is) and added an HMAC tag made with K_confirm (proving it holds the SAME keys).")
         print(f"\n[Client -> Server] Sending MSG 3 (Client Proof & Key Confirmation)...")
         print("+-----------------------------------------------------------------------------+")
         print("| MSG 3: CLIENT PROOF WIRE PACKET (2452 Bytes / 19616-bits)                   |")
@@ -380,7 +465,7 @@ class VpnSession:
 
         # Step 21: Server reconstructs Client Transcript (2,580 bytes)
         print(f"\n[Server] Reconstructing Client Transcript (label || MSG1 || MSG2)...")
-        print_transcript_table("CLIENT TRANSCRIPT PAYLOAD", rows, 2580)
+        print_transcript_table("CLIENT TRANSCRIPT PAYLOAD", rows, 4084)
 
         # Step 22: Server computes SHA-256 Digest [H_cli] of Client Transcript
         print(f"\n[Server] Hashing Client Transcript (SHA-256)...")
@@ -452,6 +537,8 @@ class VpnSession:
         """Sends 40-byte verdict packet: [8B 'AUTH_OK\\n'] [32B Server Confirmation Tag]."""
         if accepted:
             # Step 25: Server computes Server Key Confirmation Tag
+            print_note("The laptop checked the ESP32's signature against its registered public key, and checked its HMAC tag. Both passed: this is the real esp32-01 and it has the same keys.")
+            print_phase(5, 'LAPTOP CONFIRMS', 'The laptop proves it holds the same keys too -> the encrypted tunnel opens.')
             print(f"[Server] Computing Server Key Confirmation Tag = HMAC-SHA256(K_confirm, \"VPN-v1|SERVER-CONFIRM|\" || H_cli)...")
             server_confirm_tag = self.crypto.compute_confirmation_tag(
                 self.k_confirm, SERVER_CONFIRM_LABEL, client_transcript_digest
@@ -511,13 +598,14 @@ class VpnSession:
         print(f"\n[TCP HANDSHAKE] TCP connection established with {client_ip}:{client_port} (SYN -> SYN-ACK -> ACK)")
         self.handshake_deadline = time.monotonic() + HANDSHAKE_TIMEOUT
 
-        # Message 1: Client Hello with X25519 Share (82 B)
-        device_id, reg_key, client_nonce, client_eph_pk, msg1 = self._receive_client_hello(client_ip)
+        # Message 1: Client Hello with ML-KEM-512 Encapsulation Key (850 B)
+        device_id, reg_key, client_nonce, client_kem_ek, msg1 = self._receive_client_hello(client_ip)
         if not device_id:
             return False, None
+        self.registered_pubkey = reg_key
 
-        # Message 2: Server Proof with X25519 Share & ML-DSA-44 Sig (2,484 B)
-        msg2 = self._send_server_proof(device_id, client_nonce, client_eph_pk, msg1)
+        # Message 2: Server Proof with ML-KEM-512 Ciphertext & ML-DSA-44 Sig (3,220 B)
+        msg2 = self._send_server_proof(device_id, client_nonce, client_kem_ek, msg1)
         if not msg2:
             return False, None
 
@@ -533,29 +621,72 @@ class VpnSession:
     # ACTIVE DATA TUNNEL
     # -------------------------------------------------------------------------
     def handle_tunnel(self, device_id):
-        print(f"[{device_id}] [TUNNEL ACTIVE] Line-Framed Stream (PQC Mutual Auth + PFS Established)")
-        print(f"[{device_id}] [SESSION MASTER KEY]: {self.k_session.hex().upper()[:32]}...")
-        self.connection.settimeout(TUNNEL_IDLE_TIMEOUT)
-        tunnel_buffer = bytearray()
+        # Tunnel set-up explanation printed as one block (never mixed with other devices)
+        with log_block(self._log_label, title="TUNNEL START"):
+            print_summary()
+            print(f"[{device_id}] [TUNNEL ACTIVE] AES-256-GCM Encrypted Stream (PQC Mutual Auth + PFS Established)")
+            print(f"[{device_id}] [SESSION MASTER KEY]: {self.k_session.hex().upper()[:32]}...")
+            tunnel = SecureTunnel(self.k_session, role="server")
+            tunnel.print_keys()
+            print_note("Every message is now encrypted with AES-256-GCM. 'ciphertext' is what actually travels over Wi-Fi and is unreadable without the key. 'tag VALID' means the message was not changed on the way. 'msg #' must go up by exactly one, so old messages cannot be replayed.")
+
+        # Short poll timeout so idle-timeout and allowlist re-checks run even when the device is quiet
+        self.connection.settimeout(TUNNEL_POLL_INTERVAL)
+        last_rx = time.monotonic()
+        last_allowlist_check = time.monotonic()
 
         while True:
-            try:
-                chunk = self.connection.recv(1024)
-                if not chunk:
-                    print(f"[{device_id}] Client disconnected cleanly.")
-                    break
-                tunnel_buffer.extend(chunk)
+            now = time.monotonic()
 
-                while b"\n" in tunnel_buffer:
-                    line, tunnel_buffer = tunnel_buffer.split(b"\n", 1)
-                    incoming_text = line.decode("utf-8", errors="ignore").strip()
-                    if incoming_text:
-                        print(f"[{device_id}] [RX] {incoming_text}")
-                        reply = f"SERVER_ACK_FOR_{device_id}: {incoming_text}\n"
-                        self.connection.sendall(reply.encode("utf-8"))
-                        print(f"[{device_id}] [TX] {reply.strip()}")
-            except socket.timeout:
+            # Revocation: device removed from (or re-keyed in) authorized_devices.json -> close
+            if now - last_allowlist_check >= ALLOWLIST_RECHECK_INTERVAL:
+                last_allowlist_check = now
+                if self.allowlist.get_device_public_key(device_id) != self.registered_pubkey:
+                    print(f"[{device_id}] [REVOKED] Device no longer authorized in allowlist. Closing tunnel.")
+                    break
+
+            if now - last_rx >= TUNNEL_IDLE_TIMEOUT:
                 print(f"[{device_id}] [TUNNEL TIMEOUT] Idle for {int(TUNNEL_IDLE_TIMEOUT)}s. Closing session.")
+                break
+
+            try:
+                chunk = self.connection.recv(2048)
+            except socket.timeout:
+                continue
+
+            if not chunk:
+                if self._terminate_reason:
+                    print(f"[{device_id}] [SESSION CLOSED] {self._terminate_reason}.")
+                else:
+                    print(f"[{device_id}] Client disconnected cleanly.")
+                break
+            last_rx = time.monotonic()
+
+            try:
+                # feed() also enforces the frame-size limit, so one device cannot exhaust memory
+                for seq, ct, tag, plaintext in tunnel.feed(chunk):
+                    text = plaintext.decode("utf-8", errors="replace")
+                    lines = [
+                        f"[{device_id}] <- RECEIVED encrypted msg #{seq} ({10 + len(ct) + 16} bytes over Wi-Fi)",
+                        f"     ciphertext : {ct[:12].hex().upper()}...  (unreadable without the key)",
+                        f"     auth tag   : {tag.hex().upper()}  -> VALID (not tampered)",
+                        f"     decrypted  : \"{text}\"",
+                    ]
+
+                    # Reply fits in one frame even if the received message was at the size limit
+                    reply = f"SERVER_ACK_FOR_{device_id}: {text}".encode("utf-8")[:MAX_PLAINTEXT]
+                    frame = tunnel.seal(reply)
+                    self.connection.sendall(frame)
+                    tx_seq, nonce, tx_ct, tx_tag = tunnel.last_tx
+                    lines += [
+                        f"[{device_id}] -> SENT encrypted reply msg #{tx_seq} ({len(frame)} bytes over Wi-Fi)",
+                        f"     message    : \"{reply.decode('utf-8', errors='replace')}\"",
+                        f"     ciphertext : {tx_ct[:12].hex().upper()}...  (nonce {nonce.hex().upper()})",
+                        "",
+                    ]
+                    print("\n".join(lines))  # One print call = one uninterrupted block per message
+            except TunnelError as e:
+                print(f"[{device_id}] [TUNNEL-ERROR] {e}. Dropping session.")
                 break
 
     def _release_handshake_slot(self):
@@ -564,23 +695,35 @@ class VpnSession:
             self.handshake_slot = None
 
     def run(self):
+        registered = False
         try:
             try:
-                authenticated, device_id = self.perform_handshake()
+                # Buffer this session's whole handshake printout and emit it as one block
+                with log_block(self._log_label):
+                    authenticated, device_id = self.perform_handshake()
             finally:
                 self._release_handshake_slot()
 
             if not authenticated:
                 return
 
+            # One live tunnel per device: a newer session for the same ID replaces the old one
+            if self.registry is not None:
+                self.registry.register(device_id, self)
+                registered = True
+
             self.handle_tunnel(device_id)
 
-        except ConnectionResetError:
-            print(f"[{self.client_address[0]}] Connection reset by peer.")
+        except (ConnectionResetError, BrokenPipeError):
+            print(f"[{self._log_label()}] Connection reset by peer.")
         except Exception as e:
-            print(f"[{self.client_address[0]}] Session error: {e}")
+            print(f"[{self._log_label()}] Session error: {e}")
         finally:
             self._release_handshake_slot()
-            self.connection.close()
-            print(f"[{self.client_address[0]}] Session closed.\n")
-
+            if registered:
+                self.registry.unregister(self.device_id, self)
+            try:
+                self.connection.close()
+            except OSError:
+                pass
+            print(f"[{self._log_label()}] Session closed.\n")

@@ -4,37 +4,45 @@
 #include <Arduino.h>
 
 // --- Wi-Fi Network Credentials ---
-const char* const WIFI_SSID     = "Redmi 13C";     // Name of your Wi-Fi network
-const char* const WIFI_PASSWORD = "92144444";      // Password of your Wi-Fi network
+const char* const WIFI_SSID     = "YOUR_WIFI_SSID";     // Name of your Wi-Fi network
+const char* const WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";      // Password of your Wi-Fi network
 
 // --- Server Network Settings ---
-const char* const GATEWAY_IP      = "10.180.139.216"; // IP address of your laptop running the server
+const char* const GATEWAY_IP      = "YOUR_LAPTOP_IP";   // IP address of your laptop running the server
 const uint16_t    GATEWAY_PORT    = 9000;             // Port number the server is listening on
 
 // --- Protocol Version & Algorithm Identifiers ---
 const uint8_t PROTOCOL_VERSION    = 0x01; // Protocol Version 1
-const uint8_t ALGORITHM_ID        = 0x02; // Suite 2: ML-DSA-44-Auth (FIPS 204) + X25519-KEX + HKDF-SHA256
+const uint8_t ALGORITHM_ID        = 0x03; // Suite 3: ML-DSA-44-Auth (FIPS 204) + ML-KEM-512-KEX (FIPS 203) + HKDF-SHA256
 
 // --- Device Identity Name ---
 const char* const DEVICE_ID       = "esp32-01"; // Device ID name sent to check the allowlist
 
-// --- Protocol Packet Sizes and Tokens (4-Way Mutual Auth with ML-DSA-44 & Ephemeral X25519 KEX) ---
+// --- Protocol Packet Sizes and Tokens (4-Way Mutual Auth with ML-DSA-44 & Ephemeral ML-KEM-512 KEX) ---
 const size_t DEVICE_ID_LENGTH        = 16;   // Fixed 16-byte buffer for device ID packet
 const size_t CHALLENGE_NONCE_LENGTH  = 32;   // 32-byte fresh random challenge nonce
-const size_t KEY_SHARE_LENGTH        = 32;   // 32-byte X25519 ephemeral public key share
+const size_t KEM_PUBLIC_KEY_LENGTH   = 800;  // 800-byte NIST FIPS 203 ML-KEM-512 encapsulation key (ek)
+const size_t KEM_SECRET_KEY_LENGTH   = 1632; // 1,632-byte NIST FIPS 203 ML-KEM-512 decapsulation key (dk)
+const size_t KEM_CIPHERTEXT_LENGTH   = 768;  // 768-byte NIST FIPS 203 ML-KEM-512 ciphertext (ct)
+const size_t KEM_SHARED_SECRET_LENGTH= 32;   // 32-byte ML-KEM shared secret (K)
 const size_t KEY_CONFIRM_LENGTH      = 32;   // 32-byte HMAC-SHA256 key confirmation tag
 const size_t PUBLIC_KEY_LENGTH       = 1312; // 1,312-byte NIST FIPS 204 ML-DSA-44 public key length
 const size_t SECRET_KEY_LENGTH       = 2560; // 2,560-byte NIST FIPS 204 ML-DSA-44 secret key length
 const size_t SIGNATURE_LENGTH        = 2420; // 2,420-byte NIST FIPS 204 ML-DSA-44 signature length
 
-const size_t MSG1_CLIENT_HELLO_SIZE  = 82;   // 1B Ver + 1B AlgID + 16B ID + 32B Nonce + 32B X25519 Share
-const size_t MSG2_SERVER_PROOF_SIZE  = 2484; // 32B Nonce + 32B X25519 Share + 2420B ML-DSA-44 Signature
+const size_t MSG1_CLIENT_HELLO_SIZE  = 850;  // 1B Ver + 1B AlgID + 16B ID + 32B Nonce + 800B ML-KEM-512 ek
+const size_t MSG2_SERVER_PROOF_SIZE  = 3220; // 32B Nonce + 768B ML-KEM-512 ct + 2420B ML-DSA-44 Signature
 const size_t MSG3_CLIENT_PROOF_SIZE  = 2452; // 2420B ML-DSA-44 Signature + 32B Key Confirmation Tag
 const size_t MSG4_AUTH_VERDICT_SIZE  = 40;   // 8B "AUTH_OK\n" token + 32B Server Confirmation Tag
 const size_t MSG4_TOKEN_ONLY_SIZE    = 8;    // 8B "AUTH_NO\n" error token
 
+// Transcript sizes (label 14B is prepended to each)
+const size_t SERVER_TRANSCRIPT_SIZE  = 14 + MSG1_CLIENT_HELLO_SIZE + CHALLENGE_NONCE_LENGTH + KEM_CIPHERTEXT_LENGTH; // 1,664 B
+const size_t CLIENT_TRANSCRIPT_SIZE  = 14 + MSG1_CLIENT_HELLO_SIZE + MSG2_SERVER_PROOF_SIZE;                         // 4,084 B
+
 // --- Pinned Server ML-DSA-44 Public Key (1,312 Bytes) ---
 // Derived deterministically from SERVER_PRIVATE_SEED_HEX in laptop_server/config.py
+// (Same gateway identity as PQC_VPN/: only the key exchange changed from X25519 to ML-KEM-512.)
 const uint8_t TRUSTED_GATEWAY_PUBLIC_KEY[1312] = {
   0x4e, 0xd7, 0x84, 0x67, 0x0f, 0xca, 0xa8, 0x70, 0x21, 0xe9, 0x13, 0xb5, 0x2a, 0xc7, 0xe9, 0x28,
   0x65, 0x2d, 0x59, 0xcc, 0xf6, 0x7f, 0x29, 0xde, 0xfb, 0x27, 0xea, 0xe5, 0x9a, 0x0a, 0xc1, 0x14,

@@ -1,49 +1,64 @@
 #include <WiFi.h>          // Library to connect the ESP32 to your local Wi-Fi router
 #define MLD_CONFIG_API_NO_SUPERCOP
-#include <sodium.h>        // Libsodium cryptography library for X25519 & SHA-256/HMAC-SHA256
+#include <sodium.h>        // Libsodium cryptography library for SHA-256/HMAC-SHA256 & memzero
 #include <MLDSA44.h>       // NIST FIPS 204 ML-DSA-44 post-quantum digital signatures
+#include <MLKEM512.h>      // NIST FIPS 203 ML-KEM-512 post-quantum key encapsulation (mlkem-native)
 #include "config.h"        // Wi-Fi credentials, server IP, port, and pinned 1,312B server key
 #include "DeviceIdentity.h"// Device identity class (NVS flash storage and ML-DSA-44 key generation)
-#include "AuthManager.h"   // Handshake manager class (allowlist check and ML-DSA-44 mutual authentication)
+#include "AuthManager.h"   // Handshake manager class (ML-DSA-44 mutual auth + ML-KEM-512 key exchange)
+#include "SecureTunnel.h"  // AES-256-GCM encrypted data tunnel keyed from K_session
 
-// Dedicated 64 KB FreeRTOS stack size required for ML-DSA-44 NTT polynomial arithmetic (~34 KB peak)
+// Dedicated 64 KB FreeRTOS stack size required for ML-DSA-44 NTT polynomial arithmetic (~34 KB peak);
+// ML-KEM-512 KeyGen/Decaps run in the same task and need far less stack than ML-DSA-44 signing
 #define VPN_TASK_STACK_SIZE 65536
 
 // --- OOP Object Instances (allocated in .bss to keep task stack free) ---
 WiFiClient     networkClient;  // Network client socket for TCP communication
 DeviceIdentity identity(DEVICE_ID); // Manages this ESP32's unique ML-DSA-44 identity keys
-AuthManager    auth(networkClient, identity, TRUSTED_GATEWAY_PUBLIC_KEY); // Manages PQC mutual authentication
+AuthManager    auth(networkClient, identity, TRUSTED_GATEWAY_PUBLIC_KEY); // Manages PQC mutual auth + ML-KEM KEX
+SecureTunnel   tunnel(networkClient); // AES-256-GCM encryption of all post-handshake traffic
 
 // --- VPN Tunnel State Variables ---
 unsigned long lastTunnelMessageTime = 0; // Tracks the last timestamp a ping message was sent
 int           pingSequenceNumber    = 0; // Incremental counter for sent ping messages
 bool          isVpnAuthenticated    = false; // Set to true only when mutual authentication succeeds
 
+// --- Reconnect Backoff ---
+// After a failure (gateway down, device not in allowlist, auth rejected) the wait before the
+// next attempt doubles: 3s, 6s, 12s, 24s, 30s, 30s ... It resets to 3s after a successful handshake.
+// A rejected device therefore stops hammering the gateway that other ESP32s depend on.
+const unsigned long RECONNECT_DELAY_MIN_MS = 3000;
+const unsigned long RECONNECT_DELAY_MAX_MS = 30000;
+unsigned long       reconnectDelayMs       = RECONNECT_DELAY_MIN_MS;
 
-// --- Connects to the laptop server over TCP and runs the PQC handshake ---
-void connectToGatewayServer() {
+
+// --- Connects to the laptop server over TCP and runs the PQC handshake. Returns true on success ---
+bool connectToGatewayServer() {
   Serial.println("\n----------------------------------------");
   Serial.printf("Device ID         : %s\n", identity.getDeviceId());
   Serial.print ("Device Public Key : ");
   identity.printPublicKeyHex();
   Serial.println("----------------------------------------");
   Serial.printf("[TCP] Connecting to %s:%d ...\n", GATEWAY_IP, GATEWAY_PORT);
+  networkClient.stop(); // Release any half-open socket left over from a previous session
 
   if (networkClient.connect(GATEWAY_IP, GATEWAY_PORT)) {
     networkClient.setNoDelay(true); // Disable TCP Nagle buffering for low-latency handshakes
     Serial.println("[TCP] Connected.");
 
-    if (auth.performMutualAuthentication()) {
+    if (auth.performMutualAuthentication() && tunnel.begin(auth.getSessionKey())) {
       isVpnAuthenticated = true;
-      Serial.println("[TUNNEL ACTIVE] Ready for data transmission.\n");
-    } else {
-      Serial.println("[AUTH] Handshake failed. Closing connection.");
-      networkClient.stop();
-      isVpnAuthenticated = false;
+      lastTunnelMessageTime = millis(); // First ping 1.5s after the tunnel opens
+      Serial.println("[TUNNEL ACTIVE] AES-256-GCM encrypted channel ready.\n");
+      return true;
     }
-  } else {
-    Serial.println("[TCP] Connection failed. Retrying in 3 seconds...");
+    Serial.println("[AUTH] Handshake failed. Closing connection.");
+    networkClient.stop();
+    isVpnAuthenticated = false;
+    return false;
   }
+  Serial.println("[TCP] Connection failed.");
+  return false;
 }
 
 
@@ -52,7 +67,7 @@ void vpnClientTask(void* pvParameters) {
   (void)pvParameters;
 
   Serial.println("\n================================================================");
-  Serial.println("            Post-Quantum VPN (ML-DSA-44 + X25519)");
+  Serial.println("    Post-Quantum VPN (ML-DSA-44 + ML-KEM-512 + AES-256-GCM)");
   Serial.println("================================================================");
 
   if (sodium_init() < 0) {
@@ -84,14 +99,39 @@ void vpnClientTask(void* pvParameters) {
     return;
   }
 
-  connectToGatewayServer();
+  if (!connectToGatewayServer()) {
+    Serial.printf("[RETRY] Next attempt in %lu s.\n", reconnectDelayMs / 1000);
+  }
 
   // Continuous VPN tunnel loop inside the 64 KB task
   for (;;) {
+    // Wi-Fi dropped: wait for the (automatic) reconnect before trying TCP again
+    if (WiFi.status() != WL_CONNECTED) {
+      if (isVpnAuthenticated) {
+        Serial.println("[WIFI] Wi-Fi connection lost. Waiting for it to come back...");
+        networkClient.stop();
+        tunnel.end();
+        isVpnAuthenticated = false;
+        reconnectDelayMs = RECONNECT_DELAY_MIN_MS;
+      }
+      vTaskDelay(pdMS_TO_TICKS(500));
+      continue;
+    }
+
     if (!networkClient.connected() || !isVpnAuthenticated) {
+      if (isVpnAuthenticated) {
+        Serial.println("[TUNNEL] Connection to gateway lost (closed, revoked, or replaced).");
+        reconnectDelayMs = RECONNECT_DELAY_MIN_MS; // Was working: retry quickly first
+      }
       isVpnAuthenticated = false;
-      vTaskDelay(pdMS_TO_TICKS(3000));
-      connectToGatewayServer();
+      tunnel.end();
+      vTaskDelay(pdMS_TO_TICKS(reconnectDelayMs)); // Back off before retrying
+      if (connectToGatewayServer()) {
+        reconnectDelayMs = RECONNECT_DELAY_MIN_MS;                                // Success: reset backoff
+      } else {
+        reconnectDelayMs = min(reconnectDelayMs * 2, RECONNECT_DELAY_MAX_MS);     // Failure: back off more
+        Serial.printf("[RETRY] Next attempt in %lu s.\n", reconnectDelayMs / 1000);
+      }
       continue;
     }
 
@@ -99,17 +139,25 @@ void vpnClientTask(void* pvParameters) {
       lastTunnelMessageTime = millis();
       pingSequenceNumber++;
 
-      String pingPayload = "[" + String(DEVICE_ID) + "] STATUS_PING #" + String(pingSequenceNumber) + "\n";
-      networkClient.print(pingPayload);
-      Serial.printf("[TX] %s", pingPayload.c_str());
+      String pingPayload = "[" + String(DEVICE_ID) + "] STATUS_PING #" + String(pingSequenceNumber);
+      if (!tunnel.send((const uint8_t*)pingPayload.c_str(), pingPayload.length())) {
+        Serial.println("[TUNNEL] Send failed. Closing connection.");
+        networkClient.stop();
+        isVpnAuthenticated = false;
+        continue;
+      }
     }
 
-    while (networkClient.available()) {
-      String incomingReply = networkClient.readStringUntil('\n');
-      incomingReply.trim();
-      if (incomingReply.length() > 0) {
-        Serial.printf("[RX] %s\n", incomingReply.c_str());
-      }
+    static uint8_t rxPlain[SecureTunnel::MAX_PLAINTEXT];
+    int n;
+    while ((n = tunnel.poll(rxPlain, sizeof(rxPlain))) > 0) {
+      // Decrypted, authenticated reply already printed by SecureTunnel::poll
+    }
+    if (n < 0) {
+      Serial.println("[TUNNEL] Integrity/replay check failed. Closing connection.");
+      networkClient.stop();
+      isVpnAuthenticated = false;
+      continue;
     }
 
     vTaskDelay(pdMS_TO_TICKS(10));

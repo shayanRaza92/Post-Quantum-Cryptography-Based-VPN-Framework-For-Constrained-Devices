@@ -4,11 +4,11 @@ import ctypes
 import hashlib
 import hmac
 import threading
-from cryptography.hazmat.primitives.asymmetric import x25519
-from cryptography.hazmat.primitives import serialization
+from console import safe_print as print  # Thread-safe printing
 from config import (
-    ALLOWLIST_FILE, MLDSA44_SO_PATH, SERVER_PRIVATE_SEED_HEX,
+    ALLOWLIST_FILE, MLDSA44_SO_PATH, MLKEM512_SO_PATH, SERVER_PRIVATE_SEED_HEX,
     CHALLENGE_NONCE_LENGTH, PUBLIC_KEY_LENGTH, SECRET_KEY_LENGTH, SIGNATURE_LENGTH,
+    KEM_PUBLIC_KEY_LENGTH, KEM_CIPHERTEXT_LENGTH, KEM_SHARED_SECRET_LENGTH,
     SERVER_TRANSCRIPT_LABEL, CLIENT_TRANSCRIPT_LABEL,
     CLIENT_CONFIRM_LABEL, SERVER_CONFIRM_LABEL, KEY_DERIVATION_INFO
 )
@@ -54,6 +54,40 @@ def _load_mldsa44_lib():
 _MLDSA_LIB = _load_mldsa44_lib()
 
 
+def _load_mlkem512_lib():
+    """Loads the compiled mlkem-native C shared library (libmlkem512.so) via ctypes.
+    Built with MLK_CONFIG_PARAMETER_SET=512 and MLK_CONFIG_NO_RANDOMIZED_API, so the
+    server supplies encapsulation randomness itself from os.urandom (the OS CSPRNG)."""
+    if not MLKEM512_SO_PATH.exists():
+        raise FileNotFoundError(
+            f"ML-KEM-512 shared library not found at {MLKEM512_SO_PATH} (run ./build_native_libs.sh)"
+        )
+    lib = ctypes.CDLL(str(MLKEM512_SO_PATH))
+
+    # int PQCP_MLKEM_NATIVE_MLKEM512_enc_derand(uint8_t *ct, uint8_t *ss, const uint8_t *pk, const uint8_t *coins)
+    lib.PQCP_MLKEM_NATIVE_MLKEM512_enc_derand.argtypes = [
+        ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p
+    ]
+    lib.PQCP_MLKEM_NATIVE_MLKEM512_enc_derand.restype = ctypes.c_int
+
+    # int PQCP_MLKEM_NATIVE_MLKEM512_keypair_derand(uint8_t *pk, uint8_t *sk, const uint8_t *coins)
+    lib.PQCP_MLKEM_NATIVE_MLKEM512_keypair_derand.argtypes = [
+        ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p
+    ]
+    lib.PQCP_MLKEM_NATIVE_MLKEM512_keypair_derand.restype = ctypes.c_int
+
+    # int PQCP_MLKEM_NATIVE_MLKEM512_dec(uint8_t *ss, const uint8_t *ct, const uint8_t *sk)
+    lib.PQCP_MLKEM_NATIVE_MLKEM512_dec.argtypes = [
+        ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p
+    ]
+    lib.PQCP_MLKEM_NATIVE_MLKEM512_dec.restype = ctypes.c_int
+
+    return lib
+
+
+_MLKEM_LIB = _load_mlkem512_lib()
+
+
 class DeviceAllowlist:
     """Manages reading and verifying registered ESP32 devices from authorized_devices.json.
     The parsed file is cached and only re-read when its modification time changes."""
@@ -63,6 +97,7 @@ class DeviceAllowlist:
         self._lock = threading.Lock()
         self._cache = {}
         self._cache_mtime = None
+        self._bad_mtime = None
 
     def load_authorized_devices(self):
         """Returns {device_id: public_key_bytes}, reloading from disk only if the file changed."""
@@ -71,14 +106,24 @@ class DeviceAllowlist:
             return {}
 
         with self._lock:
-            mtime = self.file_path.stat().st_mtime
+            try:
+                mtime = self.file_path.stat().st_mtime
+            except OSError:
+                return {}
             if self._cache_mtime != mtime:
-                self._cache = self._read_file()
+                devices = self._read_file(report_error=(mtime != self._bad_mtime))
+                if devices is None:
+                    # File is mid-edit or has a JSON typo: keep the last good allowlist instead of
+                    # treating it as empty (which would revoke every connected device at once).
+                    # _cache_mtime is not updated, so the file is retried on the next lookup.
+                    self._bad_mtime = mtime  # Report each broken version of the file only once
+                    return dict(self._cache)
+                self._cache = devices
                 self._cache_mtime = mtime
             return dict(self._cache)
 
-    def _read_file(self):
-        """Reads allowlist JSON from disk and returns {device_id: public_key_bytes (1312 B)}."""
+    def _read_file(self, report_error=True):
+        """Reads allowlist JSON from disk. Returns {device_id: public_key_bytes (1312 B)}, or None on error."""
         try:
             with open(self.file_path, "r") as f:
                 data = json.load(f)
@@ -100,8 +145,9 @@ class DeviceAllowlist:
                         pass
                 return devices
         except Exception as e:
-            print(f"[ERROR] Failed to read allowlist: {e}")
-            return {}
+            if report_error:
+                print(f"[ERROR] Failed to read allowlist (keeping previous version): {e}")
+            return None
 
     def get_device_public_key(self, device_id):
         """Retrieves the registered 1,312-byte ML-DSA-44 public key for a device ID."""
@@ -111,7 +157,8 @@ class DeviceAllowlist:
 
 class GatewayCrypto:
     """Encapsulates server post-quantum identity keys (ML-DSA-44 via mldsa-native),
-    ephemeral key exchange (X25519), HKDF-SHA256 session key derivation, and transcript signing."""
+    ephemeral key encapsulation (ML-KEM-512 via mlkem-native), HKDF-SHA256 session key
+    derivation, and transcript signing."""
 
     def __init__(self, private_seed_hex=SERVER_PRIVATE_SEED_HEX):
         seed_bytes = bytes.fromhex(private_seed_hex)
@@ -140,23 +187,24 @@ class GatewayCrypto:
         return os.urandom(CHALLENGE_NONCE_LENGTH)
 
     # -------------------------------------------------------------------------
-    # EPHEMERAL X25519 KEY EXCHANGE & HKDF KEY DERIVATION
+    # EPHEMERAL ML-KEM-512 KEY ENCAPSULATION (FIPS 203) & HKDF KEY DERIVATION
     # -------------------------------------------------------------------------
     @staticmethod
-    def generate_ephemeral_keypair():
-        """Generates fresh ephemeral X25519 private key and 32-byte public key."""
-        priv = x25519.X25519PrivateKey.generate()
-        pub_bytes = priv.public_key().public_bytes(
-            encoding=serialization.Encoding.Raw,
-            format=serialization.PublicFormat.Raw
-        )
-        return priv, pub_bytes
-
-    @staticmethod
-    def compute_shared_secret(priv_key: x25519.X25519PrivateKey, peer_pub_bytes: bytes) -> bytes:
-        """Performs Curve25519 Diffie-Hellman scalar multiplication to derive 32-byte shared secret."""
-        peer_pub = x25519.X25519PublicKey.from_public_bytes(peer_pub_bytes)
-        return priv_key.exchange(peer_pub)
+    def encapsulate(client_ek: bytes):
+        """
+        ML-KEM-512.Encaps(ek) -> (ct (768B), K (32B)).
+        mlkem-native performs the FIPS 203 encapsulation-key modulus check and returns
+        non-zero for a malformed ek, in which case ValueError is raised.
+        """
+        if len(client_ek) != KEM_PUBLIC_KEY_LENGTH:
+            raise ValueError(f"ML-KEM-512 ek must be {KEM_PUBLIC_KEY_LENGTH} bytes, got {len(client_ek)}")
+        ct_buf = ctypes.create_string_buffer(KEM_CIPHERTEXT_LENGTH)
+        ss_buf = ctypes.create_string_buffer(KEM_SHARED_SECRET_LENGTH)
+        coins = os.urandom(32)  # FIPS 203 Alg. 20 step 1: m <- B^32 from an approved RBG
+        rc = _MLKEM_LIB.PQCP_MLKEM_NATIVE_MLKEM512_enc_derand(ct_buf, ss_buf, client_ek, coins)
+        if rc != 0:
+            raise ValueError(f"ML-KEM-512 encapsulation rejected client ek (rc={rc})")
+        return ct_buf.raw, ss_buf.raw
 
     @staticmethod
     def derive_session_keys(shared_secret: bytes, client_nonce: bytes, server_nonce: bytes):
@@ -184,23 +232,23 @@ class GatewayCrypto:
     # RUNNING TRANSCRIPT HASH (TLS 1.3 style)
     # -------------------------------------------------------------------------
     @staticmethod
-    def build_server_transcript(msg1: bytes, server_nonce: bytes, server_eph_pk: bytes) -> bytes:
+    def build_server_transcript(msg1: bytes, server_nonce: bytes, kem_ciphertext: bytes) -> bytes:
         """
         Server Transcript (signed in MSG 2):
-        SHA-256( "VPN-v1|SERVER|" (14B) || MSG1 (82B) || ServerNonce (32B) || ServerEphPk (32B) ) -> 160B input
+        SHA-256( "VPN-v1|SERVER|" (14B) || MSG1 (850B) || ServerNonce (32B) || KEM_ct (768B) ) -> 1664B input
         """
         h = hashlib.sha256()
         h.update(SERVER_TRANSCRIPT_LABEL)
         h.update(msg1)
         h.update(server_nonce)
-        h.update(server_eph_pk)
+        h.update(kem_ciphertext)
         return h.digest()
 
     @staticmethod
     def build_client_transcript(msg1: bytes, msg2: bytes) -> bytes:
         """
         Client Transcript (signed in MSG 3):
-        SHA-256( "VPN-v1|CLIENT|" (14B) || MSG1 (82B) || MSG2 (2484B) ) -> 2580B input
+        SHA-256( "VPN-v1|CLIENT|" (14B) || MSG1 (850B) || MSG2 (3220B) ) -> 4084B input
         """
         h = hashlib.sha256()
         h.update(CLIENT_TRANSCRIPT_LABEL)
@@ -208,9 +256,9 @@ class GatewayCrypto:
         h.update(msg2)
         return h.digest()
 
-    def sign_server_transcript(self, msg1: bytes, server_nonce: bytes, server_eph_pk: bytes) -> bytes:
+    def sign_server_transcript(self, msg1: bytes, server_nonce: bytes, kem_ciphertext: bytes) -> bytes:
         """Signs 32-byte Server Transcript digest using server's ML-DSA-44 secret key (2,420B signature)."""
-        digest = self.build_server_transcript(msg1, server_nonce, server_eph_pk)
+        digest = self.build_server_transcript(msg1, server_nonce, kem_ciphertext)
         sig_buf = ctypes.create_string_buffer(SIGNATURE_LENGTH)
         sig_len = ctypes.c_size_t(0)
         rc = _MLDSA_LIB.PQCP_MLDSA_NATIVE_MLDSA44_signature(

@@ -17,6 +17,7 @@ import struct
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.exceptions import InvalidTag
+from console import safe_print as print  # Thread-safe printing
 
 DIR_C2S = 1
 DIR_S2C = 2
