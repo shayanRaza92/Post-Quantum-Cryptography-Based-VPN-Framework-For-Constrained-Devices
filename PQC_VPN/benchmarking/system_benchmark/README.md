@@ -97,7 +97,7 @@ The raw data is in `Non_PQC_VPN/benchmarking/system_benchmark/results/esp32_resu
 | Most data the VPN can send | 1,208 kbps | 1,119 kbps |
 | CPU: quiet / normal / stream | 1.0 / 1.2 / 9.1 % | 1.0 / 1.2 / 9.3 % |
 
-(Run 1 was made before the last two fixes, so its B4b reply times and B5 rekey time are not shown.)
+(Run 1 used an earlier version of the benchmark, so its B4b reply times and B5 rekey time are not compared.)
 
 ---
 
@@ -184,8 +184,6 @@ Each simulated device uses its own address (`127.0.0.x`, Linux only), like separ
 * With 40 devices connecting at exactly the same moment, the classical gateway lets them all in, while the post-quantum gateway refuses a few, because its handshakes take longer and the limit of 8 handshakes at a time is reached sooner (L5). Refused devices simply try again.
 * After the handshake both VPNs are the same: the same number of messages per second and the same reply times (L6). One device can send about 23,000-25,000 messages per second through the gateway on this laptop; with 40 devices the total is about 11,600 per second, and no device was ever dropped.
 
-An earlier run on battery, in the "quiet" power mode, gave slower and less steady numbers (the same AES code measured 0.094 ms in one run and 0.041 ms in the other). Plugging in and using the Performance mode fixed that. The comparison between classical and post-quantum came out the same both times.
-
 ---
 
 ## Part C: a fair comparison of the gateway's crypto cost
@@ -261,26 +259,6 @@ Grey devices were told "busy, try again" by the limit of 8 handshakes at once. T
 ![Many tunnels open at the same time (L6)](results/graphs/8_gateway_many_tunnels.png)
 
 Once connected, the two VPNs behave the same. No session was dropped in any test.
-
----
-
-## Mistakes we found in the benchmark and fixed
-
-| Problem | Why it was wrong | Fix |
-|---|---|---|
-| The CPU test only timed our own code, with one ping every 1.5 s | The Wi-Fi work was not counted, and the number was too low to mean anything | Measure how long both cores are idle, in three cases (B6) |
-| The data test waited for each reply before sending the next message | It measured delay, not how much data can be sent | B4a: up to 8 messages on the way. B4b: a steady stream, with reply times |
-| Plain and VPN delays were measured in two separate blocks | A change in the Wi-Fi halfway through would look like VPN cost | Measure them in turns, 200 pairs per size (B3) |
-| Only mean and median were given | The slow cases were hidden | p95 for every time |
-| Only 5 rekeys were timed | Too few to trust | 20 rekeys (B5) |
-| Each post-quantum algorithm was checked with only one input | A mistake that only shows up for some inputs could be missed | 1,000 random tests against two separate implementations (Part D) |
-| The simulated devices ran inside the gateway's own Python program | L6 measured Python's limits, not the gateway | The devices now run as separate programs |
-| Laptop timings had no warm-up, classical and post-quantum were measured at different moments, and the laptop was on battery in "quiet" mode | Up to 2 times difference between runs, because the laptop kept changing its CPU speed | 50 warm-up runs, classical/post-quantum measured in turns (Part C), and the final runs made plugged in, in Performance mode |
-| B3-B6 were skipped in the first ESP32 run | B2 used up the gateway's limit of 5 connections per 10 seconds | Wait 11 seconds after B2 |
-| Only 944 bytes of the ESP32's stack were left during the benchmark | It could have crashed | The benchmark's arrays were moved off the stack |
-| The first lines of the ESP32 results had one column too few | Spreadsheets would mix up the columns | Fixed the output format |
-| Connecting 20-40 devices at once made some wait 1 extra second | The gateway's queue for new connections only held 10 | The queue now holds 64, in both gateways |
-| Rekey times included the phone hotspot waking up | About 100 ms of the 145 ms was not the VPN | Send one message right before each timed rekey (B5) |
 
 ---
 
