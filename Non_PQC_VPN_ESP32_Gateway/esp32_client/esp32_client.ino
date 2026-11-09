@@ -193,7 +193,8 @@ void loop() {
     isVpnAuthenticated = false;
     return;
   }
-  if (!rekeyPending && (tunnel.framesSent() >= REKEY_AFTER_MESSAGES || tunnel.keyAgeMs() >= REKEY_AFTER_MS)) {
+  if (!rekeyPending && ((tunnel.framesSent() >= REKEY_AFTER_MESSAGES && tunnel.keyAgeMs() >= REKEY_MIN_AGE_MS) ||
+                          tunnel.keyAgeMs() >= REKEY_AFTER_MS)) {
     if (!startRekey()) {
       Serial.println("[REKEY] Could not start rekey. Closing connection.");
       networkClient.stop();

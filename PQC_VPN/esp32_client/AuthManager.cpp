@@ -1,6 +1,9 @@
 #include "AuthManager.h"
 #include "config.h"
 #include <MLKEM512.h>  // NIST FIPS 203 ML-KEM-512 key encapsulation (mlkem-native)
+#include "VpnLog.h"
+#undef Serial      // The ESP32 core defines Serial as a macro (Serial0); replace it in this file only
+#define Serial VpnSerial   // All output of this file can be silenced for benchmarks (VpnLog.h)
 
 // Static buffer for MSG 3 (2,452 bytes) in .bss to preserve FreeRTOS task stack for ML-DSA-44 NTT math
 static uint8_t s_msg3Packet[MSG3_CLIENT_PROOF_SIZE];

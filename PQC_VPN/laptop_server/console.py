@@ -11,15 +11,26 @@ line. This module fixes that:
                     framed by a header naming the device.
 """
 import builtins
+import os
 import threading
 from contextlib import contextmanager
 
 _print_lock = threading.Lock()
 _thread_state = threading.local()
 
+# VPN_QUIET=1 (used by the system benchmark): per-device session threads print nothing, so
+# terminal output does not distort the timing measurements. The startup banner still prints.
+QUIET = os.environ.get("VPN_QUIET") == "1"
+
+
+def _quiet_here():
+    return QUIET and threading.current_thread().name.startswith("session-")
+
 
 def safe_print(*args, sep=" ", end="\n", **kwargs):
     """Same signature as print(). Buffers if the calling thread is inside log_block()."""
+    if _quiet_here():
+        return
     buffer = getattr(_thread_state, "buffer", None)
     if buffer is not None and "file" not in kwargs:
         buffer.append(sep.join(str(a) for a in args) + end)
@@ -35,6 +46,9 @@ def log_block(label_fn, title="HANDSHAKE LOG"):
     (also when it ends with an exception). label_fn() is called at the end so the
     header can include information learned during the block (e.g. the device ID).
     """
+    if _quiet_here():
+        yield          # Nothing is collected or printed in quiet mode
+        return
     _thread_state.buffer = []
     try:
         yield

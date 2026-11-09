@@ -47,8 +47,8 @@ MAX_HANDSHAKES_PER_IP = 2         # Max simultaneous in-progress handshakes from
 ALLOWLIST_RECHECK_INTERVAL = 5.0  # Seconds between allowlist re-checks for live tunnels (revocation)
 TUNNEL_POLL_INTERVAL = 1.0        # Socket read timeout inside the tunnel loop (drives the checks above)
 
-# --- In-Tunnel Rekeying Policy (enforced per device; the ESP32 rekeys at 100 messages / 300 s) ---
-REKEY_MAX_MESSAGES = 200          # Max frames a device may send with one key; more => close that session
+# --- In-Tunnel Rekeying Policy (enforced per device; the ESP32 rekeys at 1000 messages / 300 s) ---
+REKEY_MAX_MESSAGES = 2000         # Max frames a device may send with one key; more => close that session
 REKEY_MAX_SECONDS = 600.0         # Max age of one key; older => close that session
 REKEY_MIN_INTERVAL = 5.0          # Rekey requests closer together than this => close (stops rekey flooding)
 

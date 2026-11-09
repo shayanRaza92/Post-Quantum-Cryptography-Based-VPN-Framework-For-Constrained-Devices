@@ -1,0 +1,12 @@
+
+ML-KEM-512 / ML-DSA-44 differential test: 1000 random trials (seed 2030312455), 107 s
+  kem_keygen                       1000 / 1000  PASS
+  kem_encaps                       1000 / 1000  PASS
+  kem_decaps                       1000 / 1000  PASS
+  kem_implicit_rejection           1000 / 1000  PASS
+  dsa_keygen                       1000 / 1000  PASS
+  dsa_deterministic_sign           1000 / 1000  PASS
+  dsa_ours_verifies_reference      1000 / 1000  PASS
+  dsa_reference_verifies_ours      1000 / 1000  PASS
+  dsa_corrupted_sig_rejected       1000 / 1000  PASS
+  TOTAL                            9000 / 9000

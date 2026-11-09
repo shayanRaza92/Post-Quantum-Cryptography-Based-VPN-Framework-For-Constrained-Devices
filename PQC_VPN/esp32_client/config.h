@@ -131,10 +131,24 @@ const uint8_t TRUSTED_GATEWAY_PUBLIC_KEY[1312] = {
 // --- In-Tunnel Rekeying ---
 // The ESP32 replaces the tunnel keys with a fresh key exchange inside the encrypted tunnel after
 // this many messages or this much time with the same keys, whichever comes first. The gateway
-// closes the tunnel if a device goes past the gateway's hard limits (200 messages / 600 s per key).
+// closes the tunnel if a device goes past the gateway's hard limits (2000 messages / 600 s per key).
 // For a live demo, set REKEY_AFTER_MESSAGES to e.g. 10 to see a rekey every ~15 seconds.
-const uint32_t      REKEY_AFTER_MESSAGES      = 100;     // ~150 s at one ping every 1.5 s
-const unsigned long REKEY_AFTER_MS            = 300000;  // 5 minutes
+const uint32_t      REKEY_AFTER_MESSAGES      = 1000;    // After 1,000 messages the keys are replaced
+const unsigned long REKEY_AFTER_MS            = 300000;  // 5 minutes (reached first at one ping / 1.5 s)
+const unsigned long REKEY_MIN_AGE_MS          = 6000;    // Never rekey sooner (gateway refuses < 5 s)
 const unsigned long REKEY_RESPONSE_TIMEOUT_MS = 10000;   // Gateway must answer a REKEY_REQ within 10 s
+
+// --- System Benchmark Mode (see benchmarking/system_benchmark/README.md) ---
+// 1 = after Wi-Fi connects, run the end-to-end benchmark once instead of the normal VPN loop.
+// Start the gateway with:  python3 benchmarking/system_benchmark/gateway_benchmark.py --serve
+#define BENCHMARK_MODE 0
+const uint16_t      BENCH_ECHO_PORT        = 9001;   // Plain TCP echo on the laptop (no-VPN baseline)
+const int           BENCH_HANDSHAKES       = 100;    // Handshakes to time in test B2
+const unsigned long BENCH_HANDSHAKE_GAP_MS = 2200;   // Keeps under the gateway's 5-connections-per-10-s limit
+const unsigned long BENCH_THROUGHPUT_MS    = 30000;  // Duration of each throughput test (B4a, B4b)
+const int           BENCH_LATENCY_PAIRS    = 200;    // B3: plain/VPN round trips per size, measured alternately
+const int           BENCH_PIPELINE_WINDOW  = 8;      // B4a: messages in flight before waiting for ACKs
+const unsigned long BENCH_FIXED_RATE_INTERVAL_MS = 40; // B4b: one 512-byte message every 40 ms (102.4 kbps)
+const int           BENCH_REKEY_RUNS       = 20;     // B5: number of timed rekeys
 
 #endif // VPN_CONFIG_H

@@ -171,7 +171,7 @@ class VpnGateway:
 
         try:
             server_socket.bind((self.host, self.port))
-            server_socket.listen(10)
+            server_socket.listen(64)                    # Accept queue: a burst of devices connecting at once is not dropped
             print("Server listening for incoming ESP32 connections...\n")
 
             while True:  # Accept loop: dispatch each client to an independent worker thread

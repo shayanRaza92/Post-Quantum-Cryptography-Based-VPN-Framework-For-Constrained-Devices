@@ -3,7 +3,9 @@
 #include "config.h"        // Wi-Fi credentials, server IP, port, and pinned server key
 #include "DeviceIdentity.h"// Device identity class (NVS flash storage and key generation)
 #include "AuthManager.h"   // Handshake manager class (allowlist check and mutual authentication)
-#include "SecureTunnel.h"  // AES-256-GCM encrypted data tunnel keyed from K_session
+#include "SecureTunnel.h" // AES-256-GCM encrypted data tunnel keyed from K_session
+#include "VpnLog.h"        // Print object that the benchmark can silence
+#include "SystemBenchmark.h" // End-to-end benchmark (BENCHMARK_MODE in config.h)
 
 // --- OOP Object Instances ---
 WiFiClient     networkClient;  // Network client socket for TCP communication
@@ -38,7 +40,7 @@ void cancelRekey() {
 // Sends REKEY_REQ = [4B new epoch (BE)] [32B fresh X25519 public key]
 bool startRekey() {
   const uint32_t next = tunnel.epoch() + 1;
-  Serial.printf("\n[REKEY] %llu messages / %lu s with the current keys -> rekey to epoch %lu (fresh X25519 keypair)\n",
+  VpnSerial.printf("\n[REKEY] %llu messages / %lu s with the current keys -> rekey to epoch %lu (fresh X25519 keypair)\n",
                 (unsigned long long)tunnel.framesSent(), tunnel.keyAgeMs() / 1000, (unsigned long)next);
   randombytes_buf(rekeySk, sizeof(rekeySk));
   crypto_scalarmult_base(rekeyPk, rekeySk);
@@ -58,14 +60,14 @@ bool startRekey() {
 // Handles REKEY_RESP = [4B epoch (BE)] [32B gateway X25519 public key]
 bool finishRekey(const uint8_t* payload, size_t len) {
   if (!rekeyPending || len != 4 + 32) {
-    Serial.println("[REKEY] Unexpected REKEY_RESP.");
+    VpnSerial.println("[REKEY] Unexpected REKEY_RESP.");
     cancelRekey();
     return false;
   }
   const uint32_t epoch = ((uint32_t)payload[0] << 24) | ((uint32_t)payload[1] << 16) |
                          ((uint32_t)payload[2] << 8) | payload[3];
   if (epoch != tunnel.epoch() + 1) {
-    Serial.printf("[REKEY] Wrong epoch in REKEY_RESP (%lu).\n", (unsigned long)epoch);
+    VpnSerial.printf("[REKEY] Wrong epoch in REKEY_RESP (%lu).\n", (unsigned long)epoch);
     cancelRekey();
     return false;
   }
@@ -143,6 +145,11 @@ void setup() {
   // Per Espressif TRM, the ESP32 hardware TRNG requires active RF circuitry for true cryptographic entropy.
   identity.begin();
 
+#if BENCHMARK_MODE
+  runSystemBenchmark();                 // Measures the whole VPN once, then stops here
+  while (true) delay(1000);
+#endif
+
   if (!connectToGatewayServer()) { // Connect to laptop server and execute mutual authentication
     Serial.printf("[RETRY] Next attempt in %lu s.\n", reconnectDelayMs / 1000);
   }
@@ -178,7 +185,8 @@ void loop() {
     isVpnAuthenticated = false;
     return;
   }
-  if (!rekeyPending && (tunnel.framesSent() >= REKEY_AFTER_MESSAGES || tunnel.keyAgeMs() >= REKEY_AFTER_MS)) {
+  if (!rekeyPending && ((tunnel.framesSent() >= REKEY_AFTER_MESSAGES && tunnel.keyAgeMs() >= REKEY_MIN_AGE_MS) ||
+                          tunnel.keyAgeMs() >= REKEY_AFTER_MS)) {
     if (!startRekey()) {
       Serial.println("[REKEY] Could not start rekey. Closing connection.");
       networkClient.stop();

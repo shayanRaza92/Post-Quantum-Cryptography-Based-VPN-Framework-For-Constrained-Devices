@@ -1,5 +1,8 @@
 #include "SecureTunnel.h"
 #include <sodium.h>   // HMAC-SHA256 (HKDF) and sodium_memzero
+#include "VpnLog.h"
+#undef Serial      // The ESP32 core defines Serial as a macro (Serial0); replace it in this file only
+#define Serial VpnSerial   // All output of this file can be silenced for benchmarks (VpnLog.h)
 
 static const uint32_t DIR_C2S = 0x00000001;  // ESP32 -> laptop
 static const uint32_t DIR_S2C = 0x00000002;  // laptop -> ESP32

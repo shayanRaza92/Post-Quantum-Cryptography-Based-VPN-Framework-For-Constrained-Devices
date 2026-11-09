@@ -96,8 +96,8 @@ const unsigned long TUNNEL_IDLE_TIMEOUT_MS    = 30000;  // Close a tunnel after 
 const unsigned long TUNNEL_POLL_MS            = 1000;   // Tunnel read timeout (drives revocation/idle checks)
 const uint32_t      SESSION_TASK_STACK_BYTES  = 12288;  // Per-session FreeRTOS task stack (Ed25519 needs ~4 KB)
 
-// --- In-Tunnel Rekeying Policy (enforced per client; the clients rekey at 100 messages / 300 s) ---
-const uint64_t      REKEY_MAX_MESSAGES        = 200;     // Max frames a client may send with one key
+// --- In-Tunnel Rekeying Policy (enforced per client; the clients rekey at 1000 messages / 300 s) ---
+const uint64_t      REKEY_MAX_MESSAGES        = 2000;    // Max frames a client may send with one key
 const unsigned long REKEY_MAX_MS              = 600000;  // Max age of one key (10 minutes)
 const unsigned long REKEY_MIN_INTERVAL_MS     = 5000;    // Rekey requests closer together => close (anti-flooding)
 

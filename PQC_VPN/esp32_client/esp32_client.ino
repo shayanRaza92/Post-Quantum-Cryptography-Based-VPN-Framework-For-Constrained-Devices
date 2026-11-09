@@ -6,7 +6,9 @@
 #include "config.h"        // Wi-Fi credentials, server IP, port, and pinned 1,312B server key
 #include "DeviceIdentity.h"// Device identity class (NVS flash storage and ML-DSA-44 key generation)
 #include "AuthManager.h"   // Handshake manager class (ML-DSA-44 mutual auth + ML-KEM-512 key exchange)
-#include "SecureTunnel.h"  // AES-256-GCM encrypted data tunnel keyed from K_session
+#include "SecureTunnel.h" // AES-256-GCM encrypted data tunnel keyed from K_session
+#include "VpnLog.h"        // Print object that the benchmark can silence
+#include "SystemBenchmark.h" // End-to-end benchmark (BENCHMARK_MODE in config.h)
 
 // Dedicated 64 KB FreeRTOS stack size required for ML-DSA-44 NTT polynomial arithmetic (~34 KB peak);
 // ML-KEM-512 KeyGen/Decaps run in the same task and need far less stack than ML-DSA-44 signing
@@ -45,10 +47,10 @@ void cancelRekey() {
 // Sends REKEY_REQ = [4B new epoch (BE)] [800B fresh ML-KEM-512 encapsulation key]
 bool startRekey() {
   const uint32_t next = tunnel.epoch() + 1;
-  Serial.printf("\n[REKEY] %llu messages / %lu s with the current keys -> rekey to epoch %lu (fresh ML-KEM-512 keypair)\n",
+  VpnSerial.printf("\n[REKEY] %llu messages / %lu s with the current keys -> rekey to epoch %lu (fresh ML-KEM-512 keypair)\n",
                 (unsigned long long)tunnel.framesSent(), tunnel.keyAgeMs() / 1000, (unsigned long)next);
   if (MLKEM512::generateKeypair(rekeyEk, rekeyDk) != 0) {
-    Serial.println("[REKEY] ML-KEM-512 key generation failed.");
+    VpnSerial.println("[REKEY] ML-KEM-512 key generation failed.");
     cancelRekey();
     return false;
   }
@@ -68,14 +70,14 @@ bool startRekey() {
 // Handles REKEY_RESP = [4B epoch (BE)] [768B ML-KEM-512 ciphertext]
 bool finishRekey(const uint8_t* payload, size_t len) {
   if (!rekeyPending || len != 4 + MLKEM512::CIPHERTEXT_SIZE) {
-    Serial.println("[REKEY] Unexpected REKEY_RESP.");
+    VpnSerial.println("[REKEY] Unexpected REKEY_RESP.");
     cancelRekey();
     return false;
   }
   const uint32_t epoch = ((uint32_t)payload[0] << 24) | ((uint32_t)payload[1] << 16) |
                          ((uint32_t)payload[2] << 8) | payload[3];
   if (epoch != tunnel.epoch() + 1) {
-    Serial.printf("[REKEY] Wrong epoch in REKEY_RESP (%lu).\n", (unsigned long)epoch);
+    VpnSerial.printf("[REKEY] Wrong epoch in REKEY_RESP (%lu).\n", (unsigned long)epoch);
     cancelRekey();
     return false;
   }
@@ -154,6 +156,11 @@ void vpnClientTask(void* pvParameters) {
     return;
   }
 
+#if BENCHMARK_MODE
+  runSystemBenchmark();                 // Measures the whole VPN once, then stops here
+  for (;;) vTaskDelay(pdMS_TO_TICKS(1000));
+#endif
+
   if (!connectToGatewayServer()) {
     Serial.printf("[RETRY] Next attempt in %lu s.\n", reconnectDelayMs / 1000);
   }
@@ -200,7 +207,8 @@ void vpnClientTask(void* pvParameters) {
       isVpnAuthenticated = false;
       continue;
     }
-    if (!rekeyPending && (tunnel.framesSent() >= REKEY_AFTER_MESSAGES || tunnel.keyAgeMs() >= REKEY_AFTER_MS)) {
+    if (!rekeyPending && ((tunnel.framesSent() >= REKEY_AFTER_MESSAGES && tunnel.keyAgeMs() >= REKEY_MIN_AGE_MS) ||
+                          tunnel.keyAgeMs() >= REKEY_AFTER_MS)) {
       if (!startRekey()) {
         Serial.println("[REKEY] Could not start rekey. Closing connection.");
         networkClient.stop();

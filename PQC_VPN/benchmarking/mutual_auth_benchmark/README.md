@@ -1,122 +1,116 @@
-# Post-Quantum vs. Classical Digital Signature Benchmark on ESP32 (`Ed25519` vs. `ML-DSA-44`)
+# Ed25519 vs. ML-DSA-44 on the ESP32
 
-Head-to-head hardware micro-benchmark evaluating the classical digital signature winner (**`Ed25519`**, RFC 8032) against the NIST FIPS 204 standardized post-quantum module-lattice digital signature scheme (**`ML-DSA-44`**) on the ESP32 microcontroller at 240 MHz.
+This test compares the signature algorithm of our classical VPN (**Ed25519**) with the post-quantum one (**ML-DSA-44**, NIST FIPS 204) on the ESP32 at 240 MHz. In the handshake, the ESP32 signs once (to prove who it is) and verifies once (to check the gateway), so these are the two most important numbers.
 
 ---
 
-## Algorithms Evaluated
+## Algorithms
 
-| Algorithm | Cryptographic Family / Standard | Security Level | Implementation Library |
+| Algorithm | Based on | Safe against quantum computers? | Library |
 | :--- | :--- | :--- | :--- |
-| **`Ed25519`** | Twisted Edwards Curve25519 (RFC 8032) | 128-bit Classical *(Quantum-Vulnerable)* | `libsodium` (`crypto_sign_ed25519_*`) |
-| **`ML-DSA-44`** | Module-LWE / Module-SIS Lattice (NIST FIPS 204) | NIST PQC Category 2 (~128-bit Quantum + Classical) | `mldsa-native` (`PQCP_MLDSA_NATIVE_MLDSA44_*` with `MLD_CONFIG_REDUCE_RAM`) |
+| **Ed25519** | Curve25519 (RFC 8032) | No | libsodium |
+| **ML-DSA-44** | Lattices (NIST FIPS 204) | Yes (NIST security category 2) | mldsa-native, with its low-memory setting (`MLD_CONFIG_REDUCE_RAM`) |
 
 ---
 
-## Test Environment
+## Test setup
 
-* **Microcontroller:** ESP32-D0WDQ6 (Dual-Core Xtensa LX6 @ 240 MHz)
-* **Task Stack Allocation:** Dedicated 64 KB (`65,536 bytes`) FreeRTOS tasks pinned to Core 1
-* **Measurement Mechanism:** Direct hardware CPU cycle counter register (`ccount`):
-  $$\text{Time (ms)} = \frac{\text{CPU Cycles}}{240,000}$$
-* **Iteration Count:** 100 runs per algorithm with message mutation per iteration to exercise `ML-DSA-44`'s Fiat-Shamir with Aborts rejection sampling distribution.
+* **Board:** ESP32-D0WDQ6, two cores, 240 MHz
+* **Stack:** each test runs in its own task with a 64 KB stack, on core 1
+* **How time is measured:** the ESP32's cycle counter. Time in ms = cycles / 240,000.
+* **Number of runs:** 100 per algorithm. The message changes every run, because ML-DSA-44 signing time depends on the message (see below).
 
 ---
 
-## Benchmark Methodology & KPIs
+## What we measured
 
-| KPI ID | Metric | Measurement Technique |
+| ID | What | How |
 | :--- | :--- | :--- |
-| **`SIG-1`** | **Keypair Generation Latency** | Hardware cycle counter (`ccount`) across 100 runs (`Mean`, `Median`, `StdDev` $\sigma$, `Min - Max`) |
-| **`SIG-2`** | **Public Key Wire & Secret Key Size** | Serialized public key wire size (`32 B` vs. `1,312 B`) and secret key storage size (`64 B` vs. `2,560 B`) |
-| **`SIG-3`** | **Message Signing Latency** | Hardware cycle counter across 100 mutated messages (`Mean`, `Median`, `StdDev` $\sigma$, `Min - Max`) |
-| **`SIG-4`** | **Signature Wire Size** | Serialized signature byte length transmitted over the network (`64 B` vs. `2,420 B`) |
-| **`SIG-5`** | **Signature Verification Latency** | Hardware cycle counter across 100 runs (`Mean`, `Median`, `StdDev` $\sigma$, `Min - Max`) |
-| **`SIG-6`** | **Per-Handshake Client Crypto Cost** | Total client-side authentication compute time per VPN handshake ($\text{SIG-3 Mean} + \text{SIG-5 Mean}$) |
-| **`SIG-7a`** | **Steady-State Dynamic Heap** | Peak dynamic heap allocation (`malloc`/`calloc`) during runtime `Sign + Verify` |
-| **`SIG-7b`** | **KeyGen Peak Heap** | Peak dynamic heap allocation during device keypair provisioning (`KeyGen`) |
-| **`SIG-8`** | **True Peak Crypto Stack Usage** | FreeRTOS task stack high-water mark (`uxTaskGetStackHighWaterMark`) with harness/key buffers in `.bss` |
-| **`SIG-9`** | **Cryptographic Correctness** | RFC 8032 §7.1 KAT (`Ed25519`) + NIST FIPS 204 deterministic seed KAT & 1-bit tamper rejection (`ML-DSA-44`) |
+| SIG-1 | Time to make a key pair | Cycle counter, 100 runs (mean, median, spread, min-max) |
+| SIG-2 | Key sizes | Public key size (32 B vs. 1,312 B) and secret key size (64 B vs. 2,560 B) |
+| SIG-3 | Time to sign | Cycle counter, 100 different messages |
+| SIG-4 | Signature size | Bytes sent over the network (64 B vs. 2,420 B) |
+| SIG-5 | Time to verify | Cycle counter, 100 runs |
+| SIG-6 | Cost per handshake | Sign + verify (SIG-3 mean + SIG-5 mean) |
+| SIG-7a | Heap memory while signing and verifying | Highest heap use |
+| SIG-7b | Heap memory while making keys | Highest heap use |
+| SIG-8 | Stack memory | Highest stack use (the test's own buffers are kept off the stack so they do not count) |
+| SIG-9 | Correct results | Ed25519: official RFC 8032 test vector. ML-DSA-44: a key made from a fixed seed must match the expected bytes, and a signature with one changed bit must be rejected |
+
+The expected ML-DSA-44 bytes used in SIG-9 have been checked against dilithium-py, a separate implementation of FIPS 204. They match.
 
 ---
 
-## Hardware Summary Table (Measured on ESP32 @ 240 MHz, $N = 100$ Runs)
+## Results (ESP32 at 240 MHz, 100 runs)
 
-| KPI ID | Metric | Ed25519 (Classical) | ML-DSA-44 (NIST FIPS 204 PQC) | Comparison / Ratio |
+| ID | What | Ed25519 | ML-DSA-44 | Comparison |
 | :--- | :--- | :---: | :---: | :---: |
-| **`SIG-1`** | **KeyGen Latency (Mean)** | 13.36 ms | **12.69 ms** | **`ML-DSA-44` is $1.05\times$ faster** |
-| | **KeyGen Latency (Median)** | 13.36 ms | **12.67 ms** | — |
-| | **KeyGen Latency ($\sigma$ / Min–Max)** | 0.02 ms (`13.3–13.4 ms`) | 0.14 ms (`12.4–13.0 ms`) | Deterministic NTT matrix expansion |
-| **`SIG-2`** | **Public Key Wire Size** | **32 B** | 1,312 B | $41.0\times$ larger |
-| | **Secret Key Storage Size** | **64 B** | 2,560 B | $40.0\times$ larger *(or 32 B seed)* |
-| **`SIG-3`** | **Message Signing Time (Mean)** | **15.91 ms** | 56.76 ms | $3.57\times$ slower (Mean) |
-| | **Message Signing Time (Median)** | **15.91 ms** | 47.36 ms | $2.98\times$ slower (Median) |
-| | **Message Signing ($\sigma$ / Min–Max)** | 0.01 ms (`15.9–15.9 ms`) | 41.52 ms (`18.8–236.9 ms`) | Fiat-Shamir rejection sampling |
-| **`SIG-4`** | **Signature Wire Size (Fixed)** | **64 B** | 2,420 B | $37.8\times$ larger (2 TCP segments) |
-| **`SIG-5`** | **Verification Time (Mean)** | 20.73 ms | **13.39 ms** | **`ML-DSA-44` is $1.55\times$ faster!** |
-| | **Verification Time (Median)** | 20.74 ms | **13.39 ms** | — |
-| | **Verification ($\sigma$ / Min–Max)** | 0.20 ms (`20.3–21.1 ms`) | **0.00 ms (`13.4–13.4 ms`)** | Single-pass NTT verification |
-| **`SIG-6`** | **Crypto Auth Cost (`Sign + Verify`)** | **36.64 ms** | 70.15 ms | Only **$1.91\times$** total compute cost |
-| **`SIG-7a`** | **Steady-State Heap (`Sign + Verify`)** | **0 B** | **0 B** | Zero heap fragmentation |
-| **`SIG-7b`** | **KeyGen Peak Heap (`Provisioning`)** | **0 B** | **0 B** | Zero heap fragmentation |
-| **`SIG-8`** | **Peak Crypto Stack Usage (True)** | **3,908 B** (~3.8 KB) | 34,800 B (~34.0 KB) | Fits in 64 KB FreeRTOS task stack |
-| **`SIG-9`** | **Cryptographic Correctness** | **PASS (0 err)** | **PASS (0 err)** | 100% KAT & Tamper verified |
+| SIG-1 | Make key pair (mean) | 13.36 ms | **12.69 ms** | ML-DSA-44 is 1.05 times faster |
+| | Make key pair (median) | 13.36 ms | **12.67 ms** | |
+| | Make key pair (spread / min-max) | 0.02 ms (13.3-13.4 ms) | 0.14 ms (12.4-13.0 ms) | |
+| SIG-2 | Public key size | **32 B** | 1,312 B | 41 times larger |
+| | Secret key size | **64 B** | 2,560 B | 40 times larger (or keep only the 32 B seed) |
+| SIG-3 | Sign (mean) | **15.91 ms** | 56.76 ms | 3.6 times slower |
+| | Sign (median) | **15.91 ms** | 47.36 ms | 3.0 times slower |
+| | Sign (spread / min-max) | 0.01 ms (15.9-15.9 ms) | 41.52 ms (18.8-236.9 ms) | ML-DSA-44 varies a lot (see below) |
+| SIG-4 | Signature size | **64 B** | 2,420 B | 38 times larger (needs 2 TCP packets) |
+| SIG-5 | Verify (mean) | 20.73 ms | **13.39 ms** | **ML-DSA-44 is 1.55 times faster** |
+| | Verify (median) | 20.74 ms | **13.39 ms** | |
+| | Verify (spread / min-max) | 0.20 ms (20.3-21.1 ms) | **0.00 ms (13.4-13.4 ms)** | ML-DSA-44 always takes the same time |
+| SIG-6 | Sign + verify per handshake | **36.64 ms** | 70.15 ms | 1.9 times more |
+| SIG-7a | Heap while signing and verifying | **0 B** | **0 B** | Neither uses heap |
+| SIG-7b | Heap while making keys | **0 B** | **0 B** | Neither uses heap |
+| SIG-8 | Stack used | **3,908 B** (about 3.8 KB) | 34,800 B (about 34 KB) | Fits in a 64 KB task stack |
+| SIG-9 | Correct results | **PASS** | **PASS** | |
 
 ---
 
-## Key Technical Findings for Post-Quantum VPN Migration
+## What the results mean
 
-1. **`ML-DSA-44` Verification Is $1.55\times$ Faster Than Classical `Ed25519` (`13.39 ms` vs. `20.73 ms`):**
-   - During `MSG 2` of the VPN handshake, the ESP32 must verify the Laptop Server's signature before trusting the server. Because `ML-DSA-44` verification uses fast 32-bit Number Theoretic Transform (NTT) polynomial multiplication modulo $q = 8,380,417$ with no rejection loop, it verifies in a rock-steady **`13.39 ms`** ($\sigma = 0.00\text{ ms}$), beating `Ed25519` (`20.73 ms`)!
-2. **`ML-DSA-44` Key Generation Is Also Faster Than `Ed25519` (`12.69 ms` vs. `13.36 ms`):**
-   - Device key provisioning on first boot takes only **`12.69 ms`** on the ESP32 (compared to ~20,000 ms for `RSA-3072` and ~146 ms for `ECDSA P-256`).
-3. **Fiat-Shamir with Aborts Rejection Sampling in `ML-DSA-44` Signing (`18.8 ms` Min, `47.36 ms` Median, `56.76 ms` Mean):**
-   - Unlike `Ed25519` (`15.91 ms` fixed), `ML-DSA-44` signing (NIST FIPS 204 Algorithm 7) samples a masking vector $\mathbf{y}$ and rejects candidate signatures whenever $\|\mathbf{z}\|_\infty \ge \gamma_1 - \beta$ or $\|\mathbf{r}_0\|_\infty \ge \gamma_2 - \beta$ to prevent secret-key leakage.
-   - When the first attempt succeeds, `ML-DSA-44` signs in just **`18.8 ms`** (almost identical to `Ed25519`'s `15.9 ms`!), with a median of **`47.36 ms`** and mean of **`56.76 ms`**.
-4. **Total Per-Handshake Client Compute Overhead Is Only `70.15 ms` ($1.91\times$ `Ed25519`):**
-   - Combining client signing (`56.76 ms`) and server verification (`13.39 ms`), the ESP32 completes full post-quantum mutual authentication in **`70.15 ms`**—more than **$6.7\times$ faster than Classical `ECDSA P-256` (`470.09 ms`)** and **$5.5\times$ faster than `RSA-3072` (`388.27 ms`)**!
-5. **Memory Engineering Requirement (`34,800 B` Stack, `0 B` Heap):**
-   - With `MLD_CONFIG_REDUCE_RAM` and `MLD_CONFIG_SERIAL_FIPS202_ONLY` enabled in `mldsa-native`, `ML-DSA-44` allocates **`0 bytes` of dynamic heap** and peaks at **`34,800 bytes` (~34.0 KB) of stack**, which runs safely inside a dedicated **64 KB (`65,536 B`) FreeRTOS task** on the ESP32.
+1. **ML-DSA-44 verifies faster than Ed25519** (13.39 ms vs. 20.73 ms). The ESP32 has to verify the gateway's signature in every handshake, so this helps. ML-DSA-44 verification always takes exactly the same time.
+2. **ML-DSA-44 also makes keys a little faster** (12.69 ms vs. 13.36 ms). This only happens once, when a device starts for the first time.
+3. **ML-DSA-44 signing time jumps around.** It is between 18.8 ms and 236.9 ms, with a median of 47.36 ms. This is how ML-DSA works: it makes a candidate signature, and if that candidate could leak something about the secret key, it throws it away and tries again. Some messages need one try, others need several. Ed25519 always takes 15.91 ms.
+4. **In total, one post-quantum handshake costs the ESP32 70.15 ms of signing and verifying**, about 1.9 times Ed25519. That is still much faster than the older classical options: ECDSA P-256 needs 470.09 ms and RSA-3072 needs 388.27 ms (see `Non_PQC_VPN/benchmarking/mutual_auth_benchmark/`).
+5. **The real costs are size and stack.** The ML-DSA-44 public key and signature are about 40 times bigger than Ed25519's. Signing needs about 34 KB of stack, which is why the post-quantum ESP32 code runs in its own task with a 64 KB stack. Neither algorithm uses any heap memory.
 
 ---
 
-## Hardware Serial Monitor Output
+## Output from the ESP32
 
-![ESP32 Serial Monitor Summary Table](screenshots/terminal_summary_table.png)
-
----
-
-## Benchmark Visualizations
-
-### 1. Keypair Generation Latency (`SIG-1`)
-![KeyGen Mean Latency](graphs/fig_keygen_mean.png)
-
-### 2. Public Key Wire Size & Secret Key Storage Size (`SIG-2`)
-![Public and Secret Key Sizes](graphs/fig_public_key_wire_size.png)
-
-### 3. Message Signing Latency (`SIG-3`)
-![Message Signing Latency](graphs/fig_signing_latency.png)
-
-### 4. Digital Signature Wire Size (`SIG-4`)
-![Signature Wire Size](graphs/fig_signature_wire_size.png)
-
-### 5. Signature Verification Latency (`SIG-5`)
-![Verification Latency](graphs/fig_verify_latency.png)
-
-### 6. Per-Handshake Client Crypto Auth Cost (`SIG-6: Sign + Verify`)
-![Crypto Auth Cost](graphs/fig_crypto_auth_cost.png)
-
-### 7. Dynamic Heap RAM Allocation (`SIG-7a & SIG-7b`)
-![Dynamic Heap Allocation](graphs/fig_heap_steady_state.png)
-
-### 8. True Peak Cryptographic Stack Usage (`SIG-8`)
-![Peak Stack Usage](graphs/fig_stack_usage.png)
+![Summary table on the Serial Monitor](screenshots/terminal_summary_table.png)
 
 ---
 
-## How to Run the Benchmark
+## Graphs
+
+### Time to make a key pair (SIG-1)
+![Key generation time](graphs/fig_keygen_mean.png)
+
+### Key sizes (SIG-2)
+![Key sizes](graphs/fig_public_key_wire_size.png)
+
+### Time to sign (SIG-3)
+![Signing time](graphs/fig_signing_latency.png)
+
+### Signature size (SIG-4)
+![Signature size](graphs/fig_signature_wire_size.png)
+
+### Time to verify (SIG-5)
+![Verification time](graphs/fig_verify_latency.png)
+
+### Sign + verify per handshake (SIG-6)
+![Sign and verify time](graphs/fig_crypto_auth_cost.png)
+
+### Heap memory (SIG-7a and SIG-7b)
+![Heap use](graphs/fig_heap_steady_state.png)
+
+### Stack memory (SIG-8)
+![Stack use](graphs/fig_stack_usage.png)
+
+---
+
+## How to run it
 
 1. Open `mutual_auth_benchmark.ino` in the Arduino IDE.
-2. Select **Tools > Board > ESP32 Dev Module** and set **CPU Frequency** to **240 MHz**.
-3. Upload the sketch to the ESP32 and open the **Serial Monitor** at **`115200` baud**.
-
+2. Choose **Tools > Board > ESP32 Dev Module** and set the CPU frequency to **240 MHz**.
+3. Upload, then open the **Serial Monitor** at **115200 baud**.

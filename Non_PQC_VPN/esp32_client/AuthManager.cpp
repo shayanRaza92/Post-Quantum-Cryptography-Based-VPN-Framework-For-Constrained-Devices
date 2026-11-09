@@ -1,5 +1,8 @@
 #include "AuthManager.h"
 #include "config.h"
+#include "VpnLog.h"
+#undef Serial      // The ESP32 core defines Serial as a macro (Serial0); replace it in this file only
+#define Serial VpnSerial   // All output of this file can be silenced for benchmarks (VpnLog.h)
 
 // ============================================================================
 // NETWORK PACKET DIAGRAM PRINT HELPERS

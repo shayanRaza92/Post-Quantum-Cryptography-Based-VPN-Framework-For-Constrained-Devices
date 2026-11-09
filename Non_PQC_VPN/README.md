@@ -1,113 +1,123 @@
-# Classical IoT VPN (ESP32 to Gateway)
+# Classical VPN (ESP32 to Laptop)
 
-A lightweight VPN between ESP32 microcontrollers and a Python gateway server. It uses **Ed25519 digital signatures** for mutual authentication, **ephemeral X25519 Diffie-Hellman key exchange (Curve25519)**, **HKDF-SHA256 key derivation**, **bidirectional HMAC-SHA256 key confirmation**, and an **AES-256-GCM encrypted data tunnel**.
+This is our normal (not post-quantum) VPN. ESP32 boards connect to a Python program on a laptop, which we call the **gateway**. Before any data is sent, the ESP32 and the gateway prove to each other who they are. Then they agree on a secret key, and every message after that is encrypted.
 
----
-
-## Directory Overview
-
-* **`esp32_client/`**: ESP32 C++ firmware for Arduino IDE (`esp32_client.ino`, `AuthManager`, `DeviceIdentity`, `SecureTunnel` (AES-256-GCM), `config.h`).
-* **`laptop_server/`**: Python gateway server (`server.py`, `tunnel_session.py`, `crypto_engine.py`, `secure_tunnel.py` (AES-256-GCM), `session_registry.py`, `console.py`, `authorized_devices.json`).
-* **`sequence_diagram.png`**: Full protocol flow: handshake, tunnel key derivation, encrypted data frames, in-tunnel rekeying, teardown.
-* **`screenshots/`**: Photos of the classical VPN running on three ESP32s.
-  * `authorization_check_three_esp32.jpeg`: allowlist authorization check with three devices.
-  * `three_esp32_demo/`: the demo run, one photo per timestamp (`2026-11-01_6-45-00_PM.jpeg` ...).
-* **`benchmarking/`**: Standalone microcontroller benchmarks and analysis reports for classical cryptography (Digital Signatures and Key Exchange).
-  * `mutual_auth_benchmark/`: Ed25519 vs. ECDSA P-256 vs. RSA-3072. `phase_a_isolated/ed25519_isolated/` holds the standalone Ed25519 micro-benchmark.
-  * `key_exchange_benchmark/`: X25519 vs. ECDH P-256 vs. DH-3072. `phase_a_isolated/` holds the standalone X25519-over-Wi-Fi test (`x25519_wifi/x25519_wifi.ino` + `x25519_server.py`).
-
-Related projects built on this baseline (separate folders at the repository root):
-* [`../Non_PQC_VPN_ESP32_Gateway/`](../Non_PQC_VPN_ESP32_Gateway/README.md): the same VPN with an ESP32 as the gateway (no laptop).
-* [`../Non_PQC_VPN_DHT22/`](../Non_PQC_VPN_DHT22/README.md): DHT22 temperature readings sent through the VPN, with an AES-256-GCM encrypted tunnel.
+The algorithms used:
+* **Ed25519**: signatures, so each side can prove who it is
+* **X25519**: key exchange, so both sides get the same secret key without ever sending it
+* **HKDF-SHA256 and HMAC-SHA256**: turn that secret into the actual keys and double-check both sides have the same ones
+* **AES-256-GCM**: encrypts every message after the handshake
 
 ---
 
-## Protocol Handshake Flow (Mutual Authentication + Ephemeral X25519 KEX)
+## What is in this folder
 
-![Protocol Sequence Diagram](sequence_diagram.png)
+* `esp32_client/`: the code for the ESP32 (Arduino IDE).
+  * `esp32_client.ino`: Wi-Fi, connecting to the gateway, sending pings.
+  * `AuthManager`: the handshake.
+  * `DeviceIdentity`: the ESP32's own key, saved in flash.
+  * `SecureTunnel`: encryption of messages.
+  * `config.h`: Wi-Fi name, password, gateway IP and other settings.
+* `laptop_server/`: the gateway (Python).
+  * `server.py`: starts the gateway and accepts connections.
+  * `tunnel_session.py`: talks to one ESP32 (each ESP32 gets its own thread).
+  * `crypto_engine.py`: the crypto for the handshake.
+  * `secure_tunnel.py`: encryption of messages.
+  * `session_registry.py`: keeps one connection per device.
+  * `console.py`: keeps the printouts of different ESP32s from mixing.
+  * `authorized_devices.json`: the list of ESP32s that are allowed in.
+* `sequence_diagram.png`: a picture of every step, from connecting to disconnecting.
+* `screenshots/`: photos of the VPN running on three ESP32s.
+* `benchmarking/`: speed tests.
+  * `mutual_auth_benchmark/`: compares Ed25519, ECDSA P-256 and RSA-3072 on the ESP32.
+  * `key_exchange_benchmark/`: compares X25519, ECDH P-256 and DH-3072.
+  * `system_benchmark/`: tests the whole VPN from start to end, in the same way as the post-quantum VPN, so the two can be compared ([README](benchmarking/system_benchmark/README.md)).
 
-1. **TCP Connection**: The ESP32 connects to the gateway over Wi-Fi on TCP port 9000.
-2. **Message 1 (Client Hello, 82 B)**:
-   * The ESP32 transmits `[1B Version] [1B AlgID] [16B DeviceID] [32B ClientNonce] [32B ClientKeyShare]`.
-   * Generates a fresh ephemeral X25519 keypair `(sk_cli_eph, PK_cli_eph)` providing **Perfect Forward Secrecy (PFS)**.
-   * Version (`0x01`) and AlgID (`0x01`) enforce protocol standards and downgrade protection.
-   * The gateway validates `DeviceID` against `authorized_devices.json` and drops unauthorized devices.
-3. **Message 2 (Server Proof, 128 B — Server Authenticates First)**:
-   * The gateway generates a 32-byte random challenge nonce (`ServerNonce`) and a fresh ephemeral X25519 keypair `(sk_srv_eph, PK_srv_eph)`.
-   * The gateway constructs the Server Transcript binding both nonces and key shares:  
-     `SHA-256("VPN-v1|SERVER|" (14 B) || MSG1 (82 B) || ServerNonce (32 B) || PK_srv_eph (32 B))` -> 160 B input
-   * The gateway signs this digest with its Ed25519 private key and returns `[32B ServerNonce] [32B PK_srv_eph] [64B ServerSignature]`.
-   * The ESP32 verifies the signature against its pinned public key (`TRUSTED_GATEWAY_PUBLIC_KEY`). If verification fails, the ESP32 stops immediately.
-   * Both sides compute the X25519 shared secret:  
-     `SS = X25519(sk_eph, PK_peer_eph)` (32 bytes).
-   * Both sides derive `K_confirm` and `K_session` via HKDF-SHA256 (RFC 5869).
-4. **Message 3 (Client Proof, 96 B — Client Binds Full Handshake History & Proves Shared Secret)**:
-   * The ESP32 constructs the Client Transcript binding the complete wire exchange (MSG 1 + MSG 2):  
-     `SHA-256("VPN-v1|CLIENT|" (14 B) || MSG1 (82 B) || MSG2 (128 B))` -> 224 B input
-   * The ESP32 signs this digest with its device private key (64-byte Ed25519 signature).
-   * The ESP32 computes a 32-byte Client Key Confirmation tag:  
-     `HMAC-SHA256(K_confirm, "VPN-v1|CLIENT-CONFIRM|" || ClientTranscriptDigest)`.
-   * Transmits `[64B ClientSignature] [32B ClientKeyConfirmationTag]` (96 bytes).
-   * The gateway verifies the signature and validates the confirmation tag.
-5. **Message 4 (Server Verdict & Confirmation, 40 B)**:
-   * The gateway computes the 32-byte Server Key Confirmation tag:  
-     `HMAC-SHA256(K_confirm, "VPN-v1|SERVER-CONFIRM|" || ClientTranscriptDigest)`.
-   * Transmits `[8B "AUTH_OK\n"] [32B ServerKeyConfirmationTag]` (40 bytes).
-   * The ESP32 verifies the verdict token and validates the server key confirmation tag.
-6. **AES-256-GCM Data Tunnel** keyed from `K_session` (`esp32_client/SecureTunnel.*`, `laptop_server/secure_tunnel.py`):
-   * A separate key for each direction (HKDF-Expand): `K_c2s = HMAC-SHA256(K_session, "VPN-v1|TUNNEL|C2S" || 0x01)` for ESP32 → gateway and `K_s2c = HMAC-SHA256(K_session, "VPN-v1|TUNNEL|S2C" || 0x01)` for gateway → ESP32.
-   * Frame: `[2B LEN][8B SEQ][ciphertext][16B GCM tag]`. The nonce is `DIR (4B) || SEQ (8B)` and the AAD is `LEN || SEQ`, so the header is authenticated too.
-   * Plaintext of every frame: `[1B TYPE][message]`, where TYPE is `0x01` DATA, `0x02` REKEY_REQ or `0x03` REKEY_RESP. Maximum 1,023 B of message per frame.
-   * `SEQ` starts at 0 and must increase by exactly 1. A tampered, replayed, reordered, oversized or plain-text frame closes **that** session only.
-   * Each status ping (`"[esp32-01] STATUS_PING #1"`, 25 B) travels as a 52-byte frame; the encrypted ACK is 77 B. The text never appears on the Wi-Fi.
-   * On the ESP32, AES runs on the hardware accelerator (mbedTLS); on the laptop, the `cryptography` package (`AESGCM`) is used. This is the same tunnel design as `PQC_VPN`.
-7. **In-Tunnel Rekeying** (the keys are replaced regularly without reconnecting):
-   * **When:** the ESP32 rekeys after **100 messages or 5 minutes** with the same keys (`REKEY_AFTER_MESSAGES` / `REKEY_AFTER_MS` in `config.h`; set it to e.g. 10 for a live demo).
-   * **How:** a **fresh X25519 exchange inside the encrypted tunnel**. The ESP32 sends `REKEY_REQ = [epoch n+1][32 B X25519 key]` (63 B frame); the gateway answers with `REKEY_RESP = [epoch n+1][32 B X25519 key]` (63 B frame). Both messages use the old keys, and the ESP32 pauses its pings until the answer arrives.
-   * **New keys:** `PRK = HMAC-SHA256(K_session_old, SS_new)`, then `K_session = HMAC-SHA256(PRK, "VPN-v1|REKEY" || epoch || 0x01)`, then new `K_c2s` / `K_s2c` as above. `SEQ` restarts at 0 in both directions and the old keys are wiped.
-   * **Why it is safe:** the rekey travels inside the authenticated tunnel, so nobody else can trigger one, and mixing in the old key binds the new keys to this session. A key captured later only exposes traffic of its own epoch (forward secrecy inside one connection).
-   * **gateway policy (per device):** a device that sends more than **200 messages** or keeps a key longer than **10 minutes** without rekeying, asks for a rekey within **5 s** of the last one, or sends a wrong epoch / bad key share is disconnected. Only that device is affected.
+Other projects built on this one:
+* [`../Non_PQC_VPN_ESP32_Gateway/`](../Non_PQC_VPN_ESP32_Gateway/README.md): the same VPN, but an ESP32 is the gateway instead of a laptop.
+* [`../Non_PQC_VPN_DHT22/`](../Non_PQC_VPN_DHT22/README.md): sends temperature readings from a DHT22 sensor through the VPN.
 
 ---
 
-## Quickstart Guide
+## How it works
 
-### 1. Start the Server (Laptop)
+![Sequence diagram](sequence_diagram.png)
 
+The ESP32 connects to the gateway on TCP port 9000. Then four messages are exchanged. We call this the **handshake**.
+
+**Message 1, Client Hello (82 bytes): ESP32 to gateway**
+* Contains: version, algorithm ID, device name (like `esp32-01`), a 32-byte random number, and a fresh X25519 public key.
+* The X25519 key is new for every connection. So even if a key leaks one day, old sessions stay safe (this is called *forward secrecy*).
+* The gateway checks the device name against `authorized_devices.json`. Unknown devices are dropped right away.
+
+**Message 2, Server Proof (128 bytes): gateway to ESP32**
+* The gateway makes its own random number and its own fresh X25519 key.
+* It takes a SHA-256 hash of message 1 plus its own random number and key, then **signs** that hash with its Ed25519 key.
+* The ESP32 checks the signature with the gateway's public key, which is saved in `config.h`. If the check fails, the ESP32 stops. This protects against fake gateways.
+* Both sides now combine the two X25519 keys and get the same 32-byte secret. From it, using HKDF, they make two keys: `K_confirm` (used to check the handshake) and `K_session` (used for the data).
+
+**Message 3, Client Proof (96 bytes): ESP32 to gateway**
+* The ESP32 hashes messages 1 and 2 together and signs the hash with its own Ed25519 key. This proves it really is the device it claimed to be.
+* It also adds an HMAC tag made with `K_confirm`. This proves it got the same secret as the gateway.
+* The gateway checks both. If either is wrong, it sends `AUTH_NO` and closes the connection.
+
+**Message 4, Verdict (40 bytes): gateway to ESP32**
+* The gateway sends `AUTH_OK` and its own HMAC tag. The ESP32 checks the tag.
+* Now both sides have proved who they are and share the same `K_session`. The key itself was never sent over Wi-Fi.
+
+**After the handshake: encrypted messages**
+* From `K_session`, each side makes two AES-256 keys: one for ESP32 → gateway and one for gateway → ESP32.
+* Every message is encrypted with AES-256-GCM. The format is `[2 bytes length][8 bytes message number][encrypted data][16 bytes tag]`.
+* The tag proves the message was not changed on the way.
+* The message number must go up by exactly 1 each time, so an old message that is sent again (a *replay*) is caught.
+* If any message is wrong (changed, replayed, too big, or not encrypted), only that ESP32's connection is closed. Other ESP32s are not affected.
+* Example: the ping `"[esp32-01] STATUS_PING #1"` (25 bytes) travels as a 52-byte encrypted message. The text never appears on the Wi-Fi.
+* On the ESP32, AES runs on the chip's built-in AES hardware.
+
+**Changing the keys while connected (rekeying)**
+* After **1,000 messages or 5 minutes** with the same keys, the ESP32 asks for new keys. You can change this with `REKEY_AFTER_MESSAGES` and `REKEY_AFTER_MS` in `config.h`. For a demo, set it to 10 messages.
+* The ESP32 sends a fresh X25519 key inside the encrypted connection. The gateway answers with its own fresh X25519 key. Both make a new `K_session` from the new secret mixed with the old key. The old keys are deleted and the message number starts again from 0.
+* Because this happens inside the encrypted connection, nobody else can start a rekey. If a key ever leaks, it only exposes the messages from its own period.
+* The gateway disconnects a device that does not rekey (more than 2,000 messages or 10 minutes with one key), that asks for new keys within 5 seconds of the last time, or that sends a bad rekey message. Only that device is disconnected.
+
+**Many ESP32s at the same time**
+* Every ESP32 gets its own thread on the gateway, so one bad or rejected device never closes the others.
+* If the same device connects again, the old connection is closed and the new one is kept.
+* If you remove a device from `authorized_devices.json` while it is connected, it is disconnected within 5 seconds.
+* The gateway also limits how many connections it accepts at once, so it cannot easily be flooded.
+
+---
+
+## How to run it
+
+### 1. Start the gateway (laptop)
 ```bash
 cd laptop_server
 python3 server.py
 ```
-The server will print its local IP address, public key, and listen for incoming connections on port 9000.
+It prints the laptop's IP address and waits for ESP32s on port 9000.
 
-### 2. Configure and Flash the Client (ESP32)
-
-1. Open `esp32_client/config.h` and verify your network settings:
+### 2. Set up and flash the ESP32
+1. Open `esp32_client/config.h` and set your Wi-Fi and the laptop's IP:
    ```cpp
-   const char* const WIFI_SSID     = "Your_WiFi_SSID";
+   const char* const WIFI_SSID     = "Your_WiFi_Name";
    const char* const WIFI_PASSWORD = "Your_WiFi_Password";
-   const char* const GATEWAY_IP    = "10.202.171.216"; // IP address printed by server.py
-   const uint16_t    GATEWAY_PORT  = 9000;
+   const char* const GATEWAY_IP    = "192.168.1.10";   // the IP printed by server.py
+   const char* const DEVICE_ID     = "esp32-01";       // a different name for each board
    ```
-2. Open `esp32_client/esp32_client.ino` in Arduino IDE.
-3. Select your ESP32 board and COM port, then click **Upload**.
-4. Open the Serial Monitor at **115200 baud** to monitor the connection, mutual authentication, and key exchange.
+2. Open `esp32_client/esp32_client.ino` in the Arduino IDE.
+3. Select your ESP32 board and port, then click **Upload**.
+4. Open the Serial Monitor at **115200 baud** to watch the handshake and the encrypted messages.
+
+### 3. Add a new ESP32 to the allowed list
+The first time an ESP32 starts, it creates its own key and prints its **Device Public Key** on the Serial Monitor. Copy it into `laptop_server/authorized_devices.json` under its device name. The gateway picks up the change without a restart.
 
 ---
 
-## Performance Summary (ESP32 @ 240 MHz)
+## Speed on the ESP32 (240 MHz)
 
-### Digital Signature Authentication
-* **Chosen Algorithm:** Ed25519
-* **Auth Latency (Sign + Verify):** 29.35 ms
-* **Dynamic Heap Overhead:** 0 bytes
-* **Signature Wire Size:** 64 bytes
+From the algorithm benchmarks in `benchmarking/`:
+* **Ed25519 sign + verify:** 29.35 ms. Uses no extra heap memory. The signature is 64 bytes.
+* **X25519 key exchange:** 25.57 ms on the ESP32 (8.48 ms to make the key + 17.09 ms to compute the secret), 0.79 ms on the laptop. Over Wi-Fi, the whole exchange takes about 39 ms. The key is 32 bytes.
 
-### Key Exchange (Combined ESP32 <-> Laptop Benchmark)
-* **Chosen Algorithm:** X25519 (Curve25519)
-* **ESP32 KEX Crypto Cost:** 25.57 ms (`8.48 ms` KeyGen + `17.09 ms` Derive)
-* **Laptop Gateway Crypto Cost:** 0.790 ms
-* **Combined Crypto Cost (ESP32 + Laptop):** 26.36 ms
-* **End-to-End Wi-Fi KEX Latency:** 39.01 ms
-* **Public Key Share Size:** 32 bytes
-* **Dynamic Heap Overhead:** 0 bytes
+For the whole VPN (handshake, encrypted messages, CPU, memory), see the [system benchmark](benchmarking/system_benchmark/README.md).
