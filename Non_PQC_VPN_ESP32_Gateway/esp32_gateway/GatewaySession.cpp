@@ -294,13 +294,31 @@ void GatewaySession::sendVerdict(bool accepted) {
 // ----------------------------------------------------------------------------
 // DATA TUNNEL
 // ----------------------------------------------------------------------------
+static void hexPreview(const uint8_t* data, size_t len, char* out, size_t outSize) {
+  size_t n = len < 12 ? len : 12;
+  size_t pos = 0;
+  for (size_t i = 0; i < n && pos + 3 < outSize; i++) pos += snprintf(out + pos, outSize - pos, "%02X", data[i]);
+  out[pos] = '\0';
+}
+
 void GatewaySession::runTunnel() {
-  logLine("[%s] [TUNNEL ACTIVE] Line-framed stream (PFS established). K_session: %02X%02X%02X%02X...",
-          _deviceId, _kSession[0], _kSession[1], _kSession[2], _kSession[3]);
+  if (!_tunnel.begin(_kSession)) {
+    logLine("[%s] [TUNNEL-ERROR] %s. Closing session.", _deviceId, _tunnel.lastError());
+    return;
+  }
+  sodium_memzero(_kSession, sizeof(_kSession));   // Only the derived tunnel keys are needed now
+
+  char c2s[65], s2c[65];
+  for (int i = 0; i < 32; i++) {
+    snprintf(c2s + 2 * i, 3, "%02X", _tunnel.keyC2S()[i]);
+    snprintf(s2c + 2 * i, 3, "%02X", _tunnel.keyS2C()[i]);
+  }
+  logLine("[%s] [TUNNEL ACTIVE] AES-256-GCM encrypted stream (PFS established).\n"
+          "    K_c2s (client->gateway) = %s\n    K_s2c (gateway->client) = %s",
+          _deviceId, c2s, s2c);
 
   setRecvTimeout(TUNNEL_POLL_MS);   // Short timeout so revocation / idle checks run while quiet
-  char buffer[MAX_TUNNEL_LINE_BYTES + 1];
-  size_t used = 0;
+  uint8_t chunk[512];
   unsigned long lastRx = millis();
 
   while (true) {
@@ -317,7 +335,7 @@ void GatewaySession::runTunnel() {
       return;
     }
 
-    int r = recv(_sock, buffer + used, sizeof(buffer) - used, 0);
+    int r = recv(_sock, chunk, sizeof(chunk), 0);
     if (r < 0) {
       if (_terminated) continue;                                    // Loop top prints the reason
       if (isRetryableSocketError(errno)) continue;                  // Poll timeout: run checks again
@@ -330,45 +348,52 @@ void GatewaySession::runTunnel() {
       return;
     }
     lastRx = millis();
-    used += r;
 
-    // Handle every complete line in the buffer
-    size_t start = 0;
-    for (size_t i = 0; i < used; i++) {
-      if (buffer[i] == '\n') {
-        handleTunnelLine(buffer + start, i - start);
-        start = i + 1;
-        if (_terminated) break;
+    // A chunk may hold part of a frame, one frame, or several frames
+    size_t offset = 0;
+    while (offset < (size_t)r) {
+      size_t used = 0, msgLen = 0;
+      uint64_t seq = 0;
+      int status = _tunnel.consume(chunk + offset, r - offset, &used, _plain, &msgLen, &seq);
+      offset += used;
+      if (status < 0) {
+        // Tampered, replayed, reordered or oversized frame: close ONLY this session
+        logLine("[%s] [TUNNEL-ERROR] %s. Dropping session.", _deviceId, _tunnel.lastError());
+        return;
       }
-    }
-    if (start > 0) {
-      memmove(buffer, buffer + start, used - start);
-      used -= start;
-    }
-
-    // Memory guard: buffer full and still no newline -> this client is cut off (only this one)
-    if (used == sizeof(buffer)) {
-      logLine("[%s] [PROTOCOL-ERROR] Line exceeds %u bytes. Closing session.", _deviceId, (unsigned)MAX_TUNNEL_LINE_BYTES);
-      return;
+      if (status == 1 && !handleMessage(_plain, msgLen, seq)) {
+        return;
+      }
+      if (status == 0) break;   // Need more bytes for the current frame
     }
   }
 }
 
-void GatewaySession::handleTunnelLine(const char* line, size_t len) {
-  // Trim spaces / \r on both ends
-  while (len > 0 && isspace((unsigned char)line[0])) { line++; len--; }
-  while (len > 0 && isspace((unsigned char)line[len - 1])) len--;
-  if (len == 0) return;
+bool GatewaySession::handleMessage(const uint8_t* msg, size_t len, uint64_t seq) {
+  char ctPreview[32];
+  hexPreview(_tunnel.lastFrameCiphertext(), len, ctPreview, sizeof(ctPreview));
+  logLine("[%s] <- RECEIVED encrypted msg #%llu (%u bytes over Wi-Fi)\n"
+          "     ciphertext : %s...  (unreadable without the key)\n"
+          "     decrypted  : \"%.*s\"  (GCM tag VALID)",
+          _deviceId, (unsigned long long)seq, (unsigned)(GatewayTunnel::HEADER_SIZE + len + GatewayTunnel::TAG_SIZE),
+          ctPreview, (int)(len < 120 ? len : 120), (const char*)msg);
 
-  logLine("[%s] [RX] %.*s", _deviceId, (int)len, line);
+  // Reply = "SERVER_ACK_FOR_<id>: <message>", cut to one frame
+  int prefix = snprintf((char*)_reply, sizeof(_reply), "SERVER_ACK_FOR_%s: ", _deviceId);
+  size_t replyLen = (size_t)prefix;
+  size_t copy = len;
+  if (replyLen + copy > sizeof(_reply)) copy = sizeof(_reply) - replyLen;
+  memcpy(_reply + replyLen, msg, copy);
+  replyLen += copy;
 
-  char reply[MAX_TUNNEL_LINE_BYTES + 64];
-  int n = snprintf(reply, sizeof(reply), "SERVER_ACK_FOR_%s: %.*s\n", _deviceId, (int)len, line);
-  if (n <= 0) return;
-  if ((size_t)n >= sizeof(reply)) n = sizeof(reply) - 1;
-  if (!sendAll(reply, n)) {
-    terminate("failed to send reply");
-    return;
+  size_t frameLen = _tunnel.seal(_reply, replyLen, _frame);
+  if (frameLen == 0 || !sendAll(_frame, frameLen)) {
+    logLine("[%s] [TUNNEL-ERROR] Could not send encrypted reply. Closing session.", _deviceId);
+    return false;
   }
-  logLine("[%s] [TX] %.*s", _deviceId, n - 1, reply);
+  hexPreview(_frame + GatewayTunnel::HEADER_SIZE, replyLen, ctPreview, sizeof(ctPreview));
+  logLine("[%s] -> SENT encrypted reply msg #%llu (%u bytes over Wi-Fi)\n"
+          "     ciphertext : %s...",
+          _deviceId, (unsigned long long)_tunnel.lastTxSeq(), (unsigned)frameLen, ctPreview);
+  return true;
 }

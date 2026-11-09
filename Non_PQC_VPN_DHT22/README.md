@@ -4,7 +4,7 @@ Sends DHT22 temperature and humidity readings from ESP32 devices to the laptop g
 through the classical VPN in [`../Non_PQC_VPN/`](../Non_PQC_VPN/README.md).
 
 The handshake is **unchanged**. It is the same 4-message Ed25519 + X25519 + HKDF-SHA256 mutual
-authentication. The only change is the data tunnel. The original sends plaintext ping lines.
+authentication. The only change is the data tunnel. The baseline sends encrypted status pings; this version sends sensor readings.
 This version sends every reading as an **encrypted, authenticated record keyed from `K_session`**.
 
 ---

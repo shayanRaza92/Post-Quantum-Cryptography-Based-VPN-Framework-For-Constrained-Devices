@@ -7,13 +7,15 @@ The post-quantum version of the classical VPN in [`../Non_PQC_VPN/`](../Non_PQC_
 | Algorithm ID | `0x01` | `0x03` |
 | Authentication (signatures) | Ed25519 | **ML-DSA-44** (NIST FIPS 204) |
 | Key exchange | Ephemeral X25519 | **Ephemeral ML-KEM-512** (NIST FIPS 203) |
-| Data tunnel | Plaintext lines | **AES-256-GCM**, one key per direction, replay-protected |
+| Data tunnel | AES-256-GCM (same design) | **AES-256-GCM**, one key per direction, replay-protected |
 | MSG 1 / MSG 2 / MSG 3 / MSG 4 | 82 / 128 / 96 / 40 B | 850 / 3,220 / 2,452 / 40 B |
 | Total handshake bytes | 346 B | 6,562 B |
 
 Both the signatures and the key exchange are post-quantum, so traffic recorded today cannot be decrypted later by a quantum computer ("harvest now, decrypt later").
 
 > **History.** An earlier version in this folder used ML-DSA-44 with a *classical* X25519 key exchange (Algorithm ID `0x02`; MSG 1/2 = 82 / 2,484 B) and a plaintext tunnel. It was replaced by this version and removed. It is still in the git history (commit `3952522`) if the report needs the intermediate step.
+
+![Protocol Sequence Diagram](sequence_diagram.png)
 
 ---
 
@@ -38,6 +40,7 @@ Both the signatures and the key exchange are post-quantum, so traffic recorded t
 * **`arduino_libraries/`**: the two Arduino libraries used by both the ESP32 and the laptop.
   * `MLKEM512/`: `MLKEM512::` wrapper around the portable C sources of [mlkem-native](https://github.com/pq-code-package/mlkem-native) v2.0.0.
   * `MLDSA44/`: `MLDSA44::` wrapper around mldsa-native v1.0.0-beta2 (`MLD_CONFIG_REDUCE_RAM`).
+* **`sequence_diagram.png`**: Full protocol flow: ML-DSA-44 + ML-KEM-512 handshake, tunnel key derivation, encrypted frames, teardown.
 * **`benchmarking/mutual_auth_benchmark/`**: Ed25519 vs. ML-DSA-44 benchmark on the ESP32 ([README](benchmarking/mutual_auth_benchmark/README.md)).
 
 ---

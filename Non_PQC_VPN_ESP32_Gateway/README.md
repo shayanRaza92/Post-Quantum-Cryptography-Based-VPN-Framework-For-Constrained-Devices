@@ -22,11 +22,15 @@ The same classical VPN as [`Non_PQC_VPN/`](../Non_PQC_VPN/README.md), but here *
 | `esp32_gateway/gateway_config.h` | Wi-Fi access point, allowlist, identity seed, limits |
 | `esp32_gateway/VpnGateway.*` | Accept loop, DoS limits, Serial commands (like `server.py`) |
 | `esp32_gateway/GatewaySession.*` | Handshake and tunnel for one client, in its own FreeRTOS task (like `tunnel_session.py`) |
+| `esp32_gateway/GatewayTunnel.*` | Gateway side of the AES-256-GCM tunnel (like `secure_tunnel.py`) |
 | `esp32_gateway/GatewayCrypto.*` | Ed25519, X25519, HKDF, HMAC, transcripts (like `crypto_engine.py`) |
 | `esp32_gateway/Allowlist.*` | Authorized devices with runtime revoke/allow (like `authorized_devices.json`) |
 | `esp32_gateway/SessionRegistry.*` | One live tunnel per device ID (like `session_registry.py`) |
 | `esp32_gateway/Log.*` | Thread-safe Serial output: each handshake prints as one block (like `console.py`) |
-| `esp32_client/` | Client firmware: a copy of `Non_PQC_VPN/esp32_client/` set up for the ESP32 gateway |
+| `esp32_client/` | Client firmware: a copy of `Non_PQC_VPN/esp32_client/` (including `SecureTunnel`, AES-256-GCM) set up for the ESP32 gateway |
+| `sequence_diagram.png` | Full protocol flow: Wi-Fi join, handshake, tunnel keys, encrypted frames, teardown |
+
+![Protocol Sequence Diagram](sequence_diagram.png)
 
 ---
 
@@ -86,7 +90,7 @@ Every client runs in its **own FreeRTOS task**, so a problem with one client aff
 | Client silent or too slow | Its handshake times out after 10 s |
 | Same device connects again | The new tunnel replaces the old one |
 | `revoke <id>` while connected | Only that device is disconnected |
-| Tunnel line longer than 1024 bytes | Only that session is closed |
+| Tampered, replayed, reordered or oversized encrypted frame | Only that session is closed |
 | No data for 30 s | That tunnel is closed (clients ping every 1.5 s) |
 | Too many connections | Limits: 6 sessions in total, 4 handshakes at once, 2 per IP. Extra connections are refused |
 | Gateway out of memory for a new client | Only the new client is refused |
@@ -96,4 +100,4 @@ Every client runs in its **own FreeRTOS task**, so a problem with one client aff
 
 ## Security Notes
 * `GATEWAY_PRIVATE_SEED` is in the source code so that the clients' pinned key stays the same as with the laptop gateway. Anyone who reads it can pretend to be the gateway. For a real deployment, generate a new seed, keep it out of the repository, and update `TRUSTED_GATEWAY_PUBLIC_KEY` in the clients.
-* As in `Non_PQC_VPN/`, the tunnel payload is **not yet encrypted**. `K_session` is derived but not used for encryption yet.
+* The tunnel is **encrypted with AES-256-GCM**, the same design as `Non_PQC_VPN/` and `PQC_VPN/`: one key per direction derived from `K_session`, a 64-bit sequence number in every frame, and the 16-byte GCM tag checked before anything is used. Both ESP32s use the hardware AES engine through mbedTLS.

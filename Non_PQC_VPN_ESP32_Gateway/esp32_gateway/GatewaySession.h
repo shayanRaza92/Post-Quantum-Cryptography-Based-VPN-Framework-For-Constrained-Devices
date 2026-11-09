@@ -4,6 +4,7 @@
 #include <Arduino.h>
 #include "gateway_config.h"
 #include "Log.h"
+#include "GatewayTunnel.h"
 
 class VpnGateway;
 
@@ -15,7 +16,7 @@ class VpnGateway;
 //   MSG 2: Server Proof (128B)  -> [Nonce | X25519_pk | Ed25519_sig]
 //   MSG 3: Client Proof (96B)   <- [Ed25519_sig | Client_Confirm_Tag]
 //   MSG 4: Server Verdict (40B) -> ["AUTH_OK\n" | Server_Confirm_Tag]  or "AUTH_NO\n"
-// then the line-framed data tunnel.
+// then the AES-256-GCM encrypted data tunnel (GatewayTunnel).
 // Any failure ends ONLY this task and closes ONLY this client's socket.
 // ============================================================================
 class GatewaySession {
@@ -49,6 +50,12 @@ private:
 
   SessionLog _log;                        // Handshake log, printed as one block
 
+  // AES-256-GCM tunnel state and buffers (members, not stack: keeps the 12 KB task stack small)
+  GatewayTunnel _tunnel;
+  uint8_t _plain[GatewayTunnel::MAX_PLAINTEXT];   // Decrypted message from the client
+  uint8_t _reply[GatewayTunnel::MAX_PLAINTEXT];   // Plaintext reply to the client
+  uint8_t _frame[GatewayTunnel::MAX_FRAME];       // Encrypted outgoing frame
+
   void run();
   bool performHandshake();
   bool receiveClientHello();
@@ -56,7 +63,7 @@ private:
   bool verifyClientProof();
   void sendVerdict(bool accepted);
   void runTunnel();
-  void handleTunnelLine(const char* line, size_t len);
+  bool handleMessage(const uint8_t* msg, size_t len, uint64_t seq);
 
   bool recvExact(uint8_t* buffer, size_t count);   // Honors the handshake deadline
   bool sendAll(const void* data, size_t len);

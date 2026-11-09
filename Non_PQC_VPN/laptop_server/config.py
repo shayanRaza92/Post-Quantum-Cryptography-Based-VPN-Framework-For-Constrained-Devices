@@ -39,7 +39,6 @@ MAX_HANDSHAKES_PER_IP = 2         # Max simultaneous in-progress handshakes from
                                   # (stops one host from holding every global handshake slot)
 
 # --- Multi-Device Tunnel Limits ---
-MAX_TUNNEL_LINE_BYTES = 1024      # Max bytes in one tunnel line; a longer line closes ONLY that session
 ALLOWLIST_RECHECK_INTERVAL = 5.0  # Seconds between allowlist re-checks for live tunnels (revocation)
 TUNNEL_POLL_INTERVAL = 1.0        # Socket read timeout inside the tunnel loop (drives the checks above)
 

@@ -29,7 +29,7 @@ def safe_print(*args, sep=" ", end="\n", **kwargs):
 
 
 @contextmanager
-def log_block(label_fn):
+def log_block(label_fn, title="HANDSHAKE LOG"):
     """
     Collects this thread's output and prints it atomically when the block ends
     (also when it ends with an exception). label_fn() is called at the end so the
@@ -44,6 +44,6 @@ def log_block(label_fn):
         label = label_fn()
         bar = "#" * 79
         with _print_lock:
-            builtins.print(f"\n{bar}\n# BEGIN HANDSHAKE LOG : {label}\n{bar}", flush=False)
+            builtins.print(f"\n{bar}\n# BEGIN {title} : {label}\n{bar}", flush=False)
             builtins.print(lines, end="", flush=False)
-            builtins.print(f"{bar}\n# END HANDSHAKE LOG   : {label}\n{bar}\n", flush=True)
+            builtins.print(f"{bar}\n# END {title} : {label}\n{bar}\n", flush=True)

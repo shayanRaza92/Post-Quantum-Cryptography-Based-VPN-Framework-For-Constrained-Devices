@@ -3,11 +3,13 @@
 #include "config.h"        // Wi-Fi credentials, server IP, port, and pinned server key
 #include "DeviceIdentity.h"// Device identity class (NVS flash storage and key generation)
 #include "AuthManager.h"   // Handshake manager class (allowlist check and mutual authentication)
+#include "SecureTunnel.h"  // AES-256-GCM encrypted data tunnel keyed from K_session
 
 // --- OOP Object Instances ---
 WiFiClient     networkClient;  // Network client socket for TCP communication
 DeviceIdentity identity(DEVICE_ID); // Manages this ESP32's unique identity keys
 AuthManager    auth(networkClient, identity, TRUSTED_GATEWAY_PUBLIC_KEY); // Manages mutual authentication
+SecureTunnel   tunnel(networkClient); // AES-256-GCM encryption of all post-handshake traffic
 
 // --- VPN Tunnel State Variables ---
 unsigned long lastTunnelMessageTime = 0; // Tracks the last timestamp a ping message was sent
@@ -37,10 +39,11 @@ bool connectToGatewayServer() {
     networkClient.setNoDelay(true);                      // Disable TCP Nagle buffering for low-latency handshakes
     Serial.println("[TCP] Connected.");
 
-    if (auth.performMutualAuthentication()) { // Run the OOP security handshake
+    // Run the handshake, then key the AES-256-GCM tunnel from the derived K_session
+    if (auth.performMutualAuthentication() && tunnel.begin(auth.getSessionKey())) {
       isVpnAuthenticated = true;              // Mark session as authenticated
       lastTunnelMessageTime = millis();       // First ping 1.5s after the tunnel opens
-      Serial.println("[TUNNEL ACTIVE] Ready for data transmission.\n");
+      Serial.println("[TUNNEL ACTIVE] AES-256-GCM encrypted channel ready.\n");
       return true;
     }
     Serial.println("[AUTH] Handshake failed. Closing connection.");
@@ -102,6 +105,7 @@ void loop() {
       reconnectDelayMs = RECONNECT_DELAY_MIN_MS; // Was working: retry quickly first
     }
     isVpnAuthenticated = false; // Mark as unauthenticated
+    tunnel.end();               // Wipe the old session's tunnel keys and counters
     delay(reconnectDelayMs);    // Back off before retrying
     if (connectToGatewayServer()) {
       reconnectDelayMs = RECONNECT_DELAY_MIN_MS;            // Success: reset backoff
@@ -112,23 +116,29 @@ void loop() {
     return;                     // Restart loop
   }
 
-  // Send a heartbeat ping message every 1.5 seconds (1500 milliseconds)
+  // Send an encrypted heartbeat ping every 1.5 seconds (1500 milliseconds)
   if (millis() - lastTunnelMessageTime >= 1500) {
     lastTunnelMessageTime = millis(); // Record the current timestamp
     pingSequenceNumber++;             // Increment the ping sequence number
 
-    // Build the status message string
-    String pingPayload = "[" + String(DEVICE_ID) + "] STATUS_PING #" + String(pingSequenceNumber) + "\n";
-    networkClient.print(pingPayload);              // Send the ping text over the TCP tunnel
-    Serial.printf("[TX] %s", pingPayload.c_str()); // Print sent message to serial monitor
+    String pingPayload = "[" + String(DEVICE_ID) + "] STATUS_PING #" + String(pingSequenceNumber);
+    if (!tunnel.send((const uint8_t*)pingPayload.c_str(), pingPayload.length())) {  // Encrypt + send
+      Serial.println("[TUNNEL] Send failed. Closing connection.");
+      networkClient.stop();
+      isVpnAuthenticated = false;
+      return;
+    }
   }
 
-  // Check if the laptop server sent back an acknowledgement reply
-  while (networkClient.available()) {
-    String incomingReply = networkClient.readStringUntil('\n'); // Read incoming reply until newline
-    incomingReply.trim();                                      // Remove extra whitespace/newlines
-    if (incomingReply.length() > 0) {
-      Serial.printf("[RX] %s\n", incomingReply.c_str());       // Print received reply to serial monitor
-    }
+  // Receive, verify and decrypt the gateway's encrypted acknowledgements
+  static uint8_t rxPlain[SecureTunnel::MAX_PLAINTEXT];
+  int n;
+  while ((n = tunnel.poll(rxPlain, sizeof(rxPlain))) > 0) {
+    // Decrypted, authenticated reply already printed by SecureTunnel::poll
+  }
+  if (n < 0) {
+    Serial.println("[TUNNEL] Integrity/replay check failed. Closing connection.");
+    networkClient.stop();
+    isVpnAuthenticated = false;
   }
 }

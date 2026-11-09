@@ -1,14 +1,14 @@
 # Classical IoT VPN (ESP32 to Gateway)
 
-A lightweight mutual authentication and secure key exchange tunnel between an ESP32 microcontroller and a Python gateway server using **Ed25519 digital signatures**, **Ephemeral X25519 Diffie-Hellman key exchange (Curve25519)**, **HKDF-SHA256 key derivation**, and **bidirectional HMAC-SHA256 key confirmation**.
+A lightweight VPN between ESP32 microcontrollers and a Python gateway server. It uses **Ed25519 digital signatures** for mutual authentication, **ephemeral X25519 Diffie-Hellman key exchange (Curve25519)**, **HKDF-SHA256 key derivation**, **bidirectional HMAC-SHA256 key confirmation**, and an **AES-256-GCM encrypted data tunnel**.
 
 ---
 
 ## Directory Overview
 
-* **`esp32_client/`**: ESP32 C++ firmware for Arduino IDE (`esp32_client.ino`, `AuthManager`, `DeviceIdentity`, `config.h`).
-* **`laptop_server/`**: Python gateway server (`server.py`, `tunnel_session.py`, `crypto_engine.py`, `authorized_devices.json`).
-* **`sequence_diagram.png`**: Protocol flow diagram showing the mutual authentication and key exchange protocol.
+* **`esp32_client/`**: ESP32 C++ firmware for Arduino IDE (`esp32_client.ino`, `AuthManager`, `DeviceIdentity`, `SecureTunnel` (AES-256-GCM), `config.h`).
+* **`laptop_server/`**: Python gateway server (`server.py`, `tunnel_session.py`, `crypto_engine.py`, `secure_tunnel.py` (AES-256-GCM), `session_registry.py`, `console.py`, `authorized_devices.json`).
+* **`sequence_diagram.png`**: Full protocol flow: handshake, tunnel key derivation, encrypted data frames, teardown.
 * **`screenshots/`**: Photos of the classical VPN running on three ESP32s.
   * `authorization_check_three_esp32.jpeg`: allowlist authorization check with three devices.
   * `three_esp32_demo/`: the demo run, one photo per timestamp (`2026-11-01_6-45-00_PM.jpeg` ...).
@@ -54,7 +54,12 @@ Related projects built on this baseline (separate folders at the repository root
      `HMAC-SHA256(K_confirm, "VPN-v1|SERVER-CONFIRM|" || ClientTranscriptDigest)`.
    * Transmits `[8B "AUTH_OK\n"] [32B ServerKeyConfirmationTag]` (40 bytes).
    * The ESP32 verifies the verdict token and validates the server key confirmation tag.
-6. **Active Data Tunnel**: The client and server transition to the active session with verified session master keys (`K_session`).
+6. **AES-256-GCM Data Tunnel** keyed from `K_session` (`esp32_client/SecureTunnel.*`, `laptop_server/secure_tunnel.py`):
+   * A separate key for each direction (HKDF-Expand): `K_c2s = HMAC-SHA256(K_session, "VPN-v1|TUNNEL|C2S" || 0x01)` for ESP32 → gateway and `K_s2c = HMAC-SHA256(K_session, "VPN-v1|TUNNEL|S2C" || 0x01)` for gateway → ESP32.
+   * Frame: `[2B LEN][8B SEQ][ciphertext][16B GCM tag]`. The nonce is `DIR (4B) || SEQ (8B)` and the AAD is `LEN || SEQ`, so the header is authenticated too. Maximum 1,024 B of plaintext per frame.
+   * `SEQ` starts at 0 and must increase by exactly 1. A tampered, replayed, reordered, oversized or plain-text frame closes **that** session only.
+   * Each status ping (`"[esp32-01] STATUS_PING #1"`, 25 B) travels as a 51-byte frame; the encrypted ACK is 76 B. The text never appears on the Wi-Fi.
+   * On the ESP32, AES runs on the hardware accelerator (mbedTLS); on the laptop, the `cryptography` package (`AESGCM`) is used. This is the same tunnel design as `PQC_VPN`.
 
 ---
 

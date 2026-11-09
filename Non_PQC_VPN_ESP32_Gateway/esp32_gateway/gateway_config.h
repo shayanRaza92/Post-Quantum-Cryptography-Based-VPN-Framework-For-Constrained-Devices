@@ -94,7 +94,6 @@ const uint8_t       MAX_HANDSHAKES_PER_IP     = 2;      // Max handshakes in pro
 const unsigned long HANDSHAKE_TIMEOUT_MS      = 10000;  // Whole handshake must finish within 10 s
 const unsigned long TUNNEL_IDLE_TIMEOUT_MS    = 30000;  // Close a tunnel after 30 s with no data
 const unsigned long TUNNEL_POLL_MS            = 1000;   // Tunnel read timeout (drives revocation/idle checks)
-const size_t        MAX_TUNNEL_LINE_BYTES     = 1024;   // Longer line closes ONLY that session
 const uint32_t      SESSION_TASK_STACK_BYTES  = 12288;  // Per-session FreeRTOS task stack (Ed25519 needs ~4 KB)
 
 #endif // GATEWAY_CONFIG_H

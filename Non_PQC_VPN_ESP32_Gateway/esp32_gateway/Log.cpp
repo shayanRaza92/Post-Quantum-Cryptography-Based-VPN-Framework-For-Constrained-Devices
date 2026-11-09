@@ -15,7 +15,7 @@ static void lockSerial()   { if (gSerialLock) xSemaphoreTake(gSerialLock, portMA
 static void unlockSerial() { if (gSerialLock) xSemaphoreGive(gSerialLock); }
 
 void logLine(const char* fmt, ...) {
-  char buffer[256];
+  char buffer[512];
   va_list args;
   va_start(args, fmt);
   vsnprintf(buffer, sizeof(buffer), fmt, args);

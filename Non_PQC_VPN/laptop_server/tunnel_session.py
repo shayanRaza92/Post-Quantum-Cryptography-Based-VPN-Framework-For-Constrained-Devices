@@ -3,6 +3,7 @@ import time
 import re
 import hmac
 import hashlib
+from secure_tunnel import SecureTunnel, TunnelError, MAX_PLAINTEXT  # AES-256-GCM data tunnel
 from config import (
     PROTOCOL_VERSION,
     ALGORITHM_ID,
@@ -18,7 +19,6 @@ from config import (
     SERVER_CONFIRM_LABEL,
     HANDSHAKE_TIMEOUT,
     TUNNEL_IDLE_TIMEOUT,
-    MAX_TUNNEL_LINE_BYTES,
     ALLOWLIST_RECHECK_INTERVAL,
     TUNNEL_POLL_INTERVAL
 )
@@ -538,11 +538,17 @@ class VpnSession:
     # ACTIVE DATA TUNNEL
     # -------------------------------------------------------------------------
     def handle_tunnel(self, device_id):
-        print(f"[{device_id}] [TUNNEL ACTIVE] Line-Framed Stream (PFS Established)")
-        print(f"[{device_id}] [SESSION MASTER KEY]: {self.k_session.hex().upper()[:32]}...")
+        # Tunnel set-up printed as one block (never mixed with other devices)
+        with log_block(self._log_label, title="TUNNEL START"):
+            print(f"[{device_id}] [TUNNEL ACTIVE] AES-256-GCM Encrypted Stream (PFS Established)")
+            print(f"[{device_id}] [SESSION MASTER KEY]: {self.k_session.hex().upper()[:32]}...")
+            tunnel = SecureTunnel(self.k_session, role="server")
+            tunnel.print_keys()
+            print("  >> Every message is now encrypted with AES-256-GCM. 'ciphertext' is what travels over Wi-Fi;")
+            print("     'tag VALID' means it was not changed on the way; 'msg #' must go up by exactly one (no replays).\n")
+
         # Short poll timeout so idle-timeout and allowlist re-checks run even when the device is quiet
         self.connection.settimeout(TUNNEL_POLL_INTERVAL)
-        tunnel_buffer = bytearray()
         last_rx = time.monotonic()
         last_allowlist_check = time.monotonic()
 
@@ -552,8 +558,7 @@ class VpnSession:
             # Revocation: device removed from (or re-keyed in) authorized_devices.json -> close
             if now - last_allowlist_check >= ALLOWLIST_RECHECK_INTERVAL:
                 last_allowlist_check = now
-                current_key = self.allowlist.get_device_public_key(device_id)
-                if current_key != self.registered_pubkey:
+                if self.allowlist.get_device_public_key(device_id) != self.registered_pubkey:
                     print(f"[{device_id}] [REVOKED] Device no longer authorized in allowlist. Closing tunnel.")
                     break
 
@@ -562,7 +567,7 @@ class VpnSession:
                 break
 
             try:
-                chunk = self.connection.recv(1024)
+                chunk = self.connection.recv(2048)
             except socket.timeout:
                 continue
 
@@ -573,25 +578,27 @@ class VpnSession:
                     print(f"[{device_id}] Client disconnected cleanly.")
                 break
             last_rx = time.monotonic()
-            tunnel_buffer.extend(chunk)
 
-            oversized = False
-            while b"\n" in tunnel_buffer:
-                line, tunnel_buffer = tunnel_buffer.split(b"\n", 1)
-                if len(line) > MAX_TUNNEL_LINE_BYTES:
-                    oversized = True
-                    break
-                incoming_text = line.decode("utf-8", errors="ignore").strip()
-                if incoming_text:
-                    print(f"[{device_id}] [RX] {incoming_text}")
-                    reply = f"SERVER_ACK_FOR_{device_id}: {incoming_text}\n"
-                    self.connection.sendall(reply.encode("utf-8"))
-                    print(f"[{device_id}] [TX] {reply.strip()}")
-
-            # Memory guard: a client that never sends '\n' (or sends huge lines) is cut off,
-            # so one misbehaving device can never exhaust the whole gateway's memory.
-            if oversized or len(tunnel_buffer) > MAX_TUNNEL_LINE_BYTES:
-                print(f"[{device_id}] [PROTOCOL-ERROR] Line exceeds {MAX_TUNNEL_LINE_BYTES} bytes. Closing session.")
+            try:
+                # feed() enforces the frame-size limit (1,024 B plaintext), so one device cannot exhaust memory
+                for seq, ct, tag, plaintext in tunnel.feed(chunk):
+                    text = plaintext.decode("utf-8", errors="replace")
+                    reply = f"SERVER_ACK_FOR_{device_id}: {text}".encode("utf-8")[:MAX_PLAINTEXT]
+                    frame = tunnel.seal(reply)
+                    self.connection.sendall(frame)
+                    tx_seq, nonce, tx_ct, _ = tunnel.last_tx
+                    print("\n".join([  # One print call = one uninterrupted block per message
+                        f"[{device_id}] <- RECEIVED encrypted msg #{seq} ({10 + len(ct) + 16} bytes over Wi-Fi)",
+                        f"     ciphertext : {ct[:12].hex().upper()}...  (unreadable without the key)",
+                        f"     auth tag   : {tag.hex().upper()}  -> VALID (not tampered)",
+                        f"     decrypted  : \"{text}\"",
+                        f"[{device_id}] -> SENT encrypted reply msg #{tx_seq} ({len(frame)} bytes over Wi-Fi)",
+                        f"     message    : \"{reply.decode('utf-8', errors='replace')}\"",
+                        f"     ciphertext : {tx_ct[:12].hex().upper()}...  (nonce {nonce.hex().upper()})",
+                        "",
+                    ]))
+            except TunnelError as e:
+                print(f"[{device_id}] [TUNNEL-ERROR] {e}. Dropping session.")
                 break
 
     def _release_handshake_slot(self):
