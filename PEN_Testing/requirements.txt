@@ -1,0 +1,22 @@
+# Python dependencies for the PQC VPN pen-testing framework (future execution).
+# Install into a SEPARATE venv from the VPN gateway (see TESTING_METHODOLOGY.md).
+
+# Same AEAD / HKDF primitives the gateway uses, so Test 3/4 can build real frames.
+cryptography>=42.0.0
+
+# Protocol fuzzing harness for the handshake (Test 3).
+boofuzz>=0.4.1
+
+# Low-level packet crafting / capture helpers (Test 3, Test 4, Test 5).
+scapy>=2.5.0
+
+# Convenience for CLIs / reports.
+tabulate>=0.9.0
+
+# --- Tools installed OUTSIDE pip (documented per test, not auto-installed) ---
+#   gitleaks        -> Test 1 (secret scanning)        https://github.com/gitleaks/gitleaks
+#   trufflehog      -> Test 1 (secret scanning)        https://github.com/trufflesecurity/trufflehog
+#   esptool.py      -> Test 2 (ESP32 inspection)       pip install esptool  (install deliberately)
+#   espefuse.py     -> Test 2 (eFuse / Secure Boot)    ships with esptool
+#   wireshark/tshark-> Test 3/4 (traffic capture)      https://www.wireshark.org
+#   nmap            -> Test 5 (service discovery)      https://nmap.org

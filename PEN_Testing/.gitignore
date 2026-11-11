@@ -1,0 +1,15 @@
+# Operator's real target config (never commit a live target / authorised flag)
+config.json
+
+# Test output / evidence is generated, not tracked (keep the folders via .gitkeep)
+*/reports/*
+!*/reports/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Captures
+*.pcap
+*.pcapng

@@ -1,0 +1,32 @@
+# Custom gitleaks rules for the PQC VPN project (Test 1).
+# Extends gitleaks' default rules with project-specific secret patterns so the known hard-coded
+# ML-DSA-44 seed and any Wi-Fi credentials are reliably caught in the working tree and history.
+
+title = "PQC VPN gitleaks config"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "pqc-vpn-mldsa-server-seed"
+description = "Hard-coded 32-byte (64 hex) ML-DSA-44 server private seed"
+# Matches:  SERVER_PRIVATE_SEED_HEX = "....64 hex...."
+regex = '''SERVER_PRIVATE_SEED_HEX\s*=\s*["'][0-9a-fA-F]{64}["']'''
+keywords = ["SERVER_PRIVATE_SEED_HEX"]
+tags = ["pqc", "private-key", "mldsa"]
+
+[[rules]]
+id = "pqc-vpn-wifi-credential"
+description = "Non-placeholder Wi-Fi SSID/password in ESP32 config.h"
+# Flags any WIFI_SSID / WIFI_PASSWORD assignment; placeholders are filtered by the allowlist below.
+regex = '''WIFI_(SSID|PASSWORD)\s*=\s*"[^"]+"'''
+keywords = ["WIFI_SSID", "WIFI_PASSWORD"]
+tags = ["pqc", "wifi", "credential"]
+
+[allowlist]
+description = "Ignore the shipped placeholder credentials (not real secrets)"
+regexes = [
+  '''YOUR_WIFI_SSID''',
+  '''YOUR_WIFI_PASSWORD''',
+  '''YOUR_LAPTOP_IP''',
+]

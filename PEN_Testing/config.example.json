@@ -1,0 +1,30 @@
+{
+  "_comment": "Copy this file to config.json and edit it. config.json is gitignored. Every active script refuses to run against a live target unless 'authorised' is true AND a host/port are set here. Point this ONLY at a gateway/ESP32 you own on an isolated lab network.",
+
+  "authorised": false,
+
+  "target": {
+    "host": "192.168.50.10",
+    "port": 9000,
+    "_note": "The laptop gateway listens on 0.0.0.0:9000 (PQC_VPN/laptop_server/config.py PORT=9000)."
+  },
+
+  "esp32": {
+    "serial_port": "/dev/ttyUSB0",
+    "baud": 115200,
+    "chip": "esp32",
+    "_note": "Used only by Test 2 inspection commands; no flash is read in the preparation phase."
+  },
+
+  "lab": {
+    "network_cidr": "192.168.50.0/24",
+    "device_id": "esp32-01",
+    "_note": "device_id must match an entry in PQC_VPN/laptop_server/authorized_devices.json for auth-path tests."
+  },
+
+  "limits": {
+    "dos_max_requests": 20,
+    "dos_max_concurrent": 10,
+    "_note": "Hard ceilings for Test 5. Scripts clamp to these; they are intentionally small to probe the documented caps (8 global handshakes / 2 per IP / 5 per 10s), not to flood."
+  }
+}
