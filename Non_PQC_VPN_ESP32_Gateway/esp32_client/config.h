@@ -17,7 +17,7 @@ const uint8_t PROTOCOL_VERSION    = 0x01; // Protocol Version 1
 const uint8_t ALGORITHM_ID        = 0x01; // Suite 1: Ed25519-Auth + X25519-KEX + HKDF-SHA256
 
 // --- Device Identity Name ---
-const char* const DEVICE_ID       = "esp32-03"; // Device ID name sent to check the allowlist
+const char* const DEVICE_ID       = "esp32-01"; // Device ID name sent to check the allowlist
 
 // --- Protocol Packet Sizes and Tokens (4-Way Mutual Auth with Ephemeral X25519 Key Exchange) ---
 const size_t DEVICE_ID_LENGTH        = 16;  // Fixed 16-byte buffer for device ID packet
@@ -47,7 +47,8 @@ const uint8_t TRUSTED_GATEWAY_PUBLIC_KEY[32] = {
 // this many messages or this much time with the same keys, whichever comes first. The gateway
 // closes the tunnel if a device goes past the gateway's hard limits (2000 messages / 600 s per key).
 // For a live demo, set REKEY_AFTER_MESSAGES to e.g. 10 to see a rekey every ~15 seconds.
-const uint32_t      REKEY_AFTER_MESSAGES      = 1000;    // After 1,000 messages the keys are replaced
+const uint32_t      REKEY_AFTER_MESSAGES      = 20;
+    // After 1,000 messages the keys are replaced
 const unsigned long REKEY_AFTER_MS            = 300000;  // 5 minutes (reached first at one ping / 1.5 s)
 const unsigned long REKEY_MIN_AGE_MS          = 6000;    // Never rekey sooner (gateway refuses < 5 s)
 const unsigned long REKEY_RESPONSE_TIMEOUT_MS = 10000;   // Gateway must answer a REKEY_REQ within 10 s
