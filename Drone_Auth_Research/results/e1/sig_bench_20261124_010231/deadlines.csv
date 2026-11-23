@@ -1,0 +1,7 @@
+algorithm,n,slower_than_20ms_percent,slower_than_50ms_percent,slower_than_100ms_percent,slower_than_200ms_percent
+Ed25519,1000,0.0,0.0,0.0,0.0
+ECDSA-P256,1000,100.0,100.0,100.0,0.0
+RSA-3072,1000,100.0,100.0,100.0,100.0
+ML-DSA-44,1000,100.0,58.5,25.6,5.0
+ML-DSA-65,1000,100.0,81.1,50.4,22.7
+ML-DSA-87,1000,100.0,100.0,57.1,31.8

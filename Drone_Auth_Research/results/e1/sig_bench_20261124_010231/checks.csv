@@ -1,0 +1,7 @@
+algorithm,known_answer_test,failed_operations,heap_change_B,probe_errors
+Ed25519,PASS,0,-44,0
+ECDSA-P256,PASS,0,-156,0
+RSA-3072,PASS,0,0,0
+ML-DSA-44,PASS,0,-44,0
+ML-DSA-65,PASS,0,-44,0
+ML-DSA-87,PASS,0,-44,0

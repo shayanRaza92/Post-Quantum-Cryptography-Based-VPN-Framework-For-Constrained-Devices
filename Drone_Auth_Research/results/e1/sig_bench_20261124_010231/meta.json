@@ -1,0 +1,33 @@
+{
+  "log": "sig_bench_20261124_010231.log",
+  "host": {
+    "date": "2026-11-24T01:02:31",
+    "git_commit": "78016cca5f0da0bd9b079af596fb44171ba450eb",
+    "git_uncommitted_changes": "yes",
+    "port": "/dev/ttyUSB0"
+  },
+  "device": {
+    "firmware": "sig_bench_unified v1 (Drone_Auth_Research step 1)",
+    "build": "Nov 24 2026 01:01:53",
+    "arduino_core": "3.3.12",
+    "esp_idf": "v5.5.5",
+    "mbedtls": "3.6.6",
+    "libsodium": "1.0.21",
+    "mldsa_native": "v1.0.0-beta2 (portable C, MLD_CONFIG_REDUCE_RAM)",
+    "chip": "ESP32-D0WD rev 100, 2 cores",
+    "cpu_mhz": "240",
+    "flash": "4 MB at 80 MHz",
+    "sketch_bytes": "527280",
+    "free_heap": "274756",
+    "largest_free_block": "110580",
+    "radio": "Wi-Fi and Bluetooth never started",
+    "runs": "1000 (RSA keygen 30, warm-up 5, repeat check 100)",
+    "message_bytes": "64",
+    "core": "1 (priority 5)",
+    "stack_bytes": "98304 (empty task uses 388, subtracted from STACK values)",
+    "timer": "CPU cycle counter; RSA keygen esp_timer (us x 240). RAW values are CPU cycles",
+    "total_seconds": "2136.6"
+  },
+  "errors": [],
+  "device_vs_host_median_mismatches": []
+}
