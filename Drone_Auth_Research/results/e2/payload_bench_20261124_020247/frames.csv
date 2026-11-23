@@ -1,0 +1,7 @@
+algorithm,signature_B,data_left_in_one_MAVLink_2_message_B,data_left_in_one_ESP-NOW_v1_B,data_left_in_one_ESP-NOW_v2_B,data_left_in_one_TCP_segment_(ESP32)_B,frames_for_signature_MAVLink_2_message,frames_for_signature_ESP-NOW_v1,frames_for_signature_ESP-NOW_v2,frames_for_signature_TCP_segment_(ESP32)
+Ed25519,64,191,186,1406,1372,1,1,1,1
+ECDSA-P256,72,183,178,1398,1364,1,1,1,1
+RSA-3072,384,0,0,1086,1052,2,2,1,1
+ML-DSA-44,2420,0,0,0,0,10,10,2,2
+ML-DSA-65,3309,0,0,0,0,13,14,3,3
+ML-DSA-87,4627,0,0,0,0,19,19,4,4

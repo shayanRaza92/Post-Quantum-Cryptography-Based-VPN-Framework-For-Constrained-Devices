@@ -17,6 +17,12 @@
 #define STACK_BYTES_WANTED (96 * 1024) // task stack for every measurement task (ML-DSA-87 needs a lot)
 #define RAW_PER_LINE     20     // raw samples printed per output line
 
+// ---- Step 2 (send P): message size ------------------------------------------------------
+#define E2_RUNS          100    // signatures and verifications timed per message size
+#define E2_SIZES         {64, 256, 1024, 4096, 16384, 65536}   // message sizes in bytes
+#define E2_STACK_MARGIN  8192   // extra stack on top of what an algorithm was measured to need
+#define E2_SEARCH_STEP   64     // the largest-message search stops when it is this close (bytes)
+
 // ---- Only for tools/flash_footprint.sh: leave out the test-only code -----------------
 #ifndef FOOTPRINT_BUILD
 #define FOOTPRINT_BUILD 0

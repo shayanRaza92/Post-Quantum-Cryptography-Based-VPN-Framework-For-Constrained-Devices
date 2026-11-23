@@ -1,4 +1,6 @@
-// sig_bench_unified.ino - Step 1 (experiment E1) of the drone authentication study.
+// sig_bench_unified.ino - Steps 1 and 2 (experiments E1 and E2) of the drone authentication study.
+//   Send S: Step 1, all algorithms on 64-byte messages (this file)
+//   Send P: Step 2, message size and largest signable message (e2_payload.ino)
 //
 // Times Ed25519, ECDSA P-256, RSA-3072, ML-DSA-44, ML-DSA-65 and ML-DSA-87 on ONE ESP32,
 // in ONE firmware, under the same conditions, so the numbers can be compared directly:
@@ -141,18 +143,26 @@ static void job_entry(void* p) {
   vTaskDelete(NULL);
 }
 
-static bool run_in_task(void (*fn)(void*), void* arg, uint32_t* stack_used) {
+// Runs fn in a new task with stack_bytes of stack. quiet: no ERROR line if the task cannot be
+// created (used by Step 2's largest-message search, where running out of memory is expected).
+static bool run_in_task_stack(void (*fn)(void*), void* arg, uint32_t stack_bytes, uint32_t* stack_used,
+                              bool quiet = false) {
   TaskJob j = {fn, arg, xSemaphoreCreateBinary(), 0};
-  if (xTaskCreatePinnedToCore(job_entry, "measure", g_stack_bytes, &j, BENCH_PRIORITY, NULL, BENCH_CORE) != pdPASS) {
-    Serial.printf("ERROR,task,could not create a task with %u bytes of stack\n", (unsigned)g_stack_bytes);
+  if (j.done == NULL) return false;
+  if (xTaskCreatePinnedToCore(job_entry, "measure", stack_bytes, &j, BENCH_PRIORITY, NULL, BENCH_CORE) != pdPASS) {
+    if (!quiet) Serial.printf("ERROR,task,could not create a task with %u bytes of stack\n", (unsigned)stack_bytes);
     vSemaphoreDelete(j.done);
     return false;
   }
   xSemaphoreTake(j.done, portMAX_DELAY);
   vSemaphoreDelete(j.done);
   delay(20);                                     // let the idle task free the finished task's stack
-  if (stack_used) *stack_used = g_stack_bytes - (uint32_t)(j.free_min * sizeof(StackType_t));
+  if (stack_used) *stack_used = stack_bytes - (uint32_t)(j.free_min * sizeof(StackType_t));
   return true;
+}
+
+static bool run_in_task(void (*fn)(void*), void* arg, uint32_t* stack_used) {
+  return run_in_task_stack(fn, arg, g_stack_bytes, stack_used);
 }
 
 // ---- The timed loops for one algorithm (runs inside a measurement task) ----------------
@@ -324,8 +334,8 @@ static void print_table() {
 }
 
 // ---- Start-up ---------------------------------------------------------------------------
-static void print_meta() {
-  Serial.println("META,firmware,sig_bench_unified v1 (Drone_Auth_Research step 1)");
+static void print_meta_common() {
+  Serial.println("META,firmware,sig_bench_unified v2 (Drone_Auth_Research steps 1 and 2)");
   Serial.printf("META,build,%s %s\n", __DATE__, __TIME__);
   Serial.printf("META,arduino_core,%s\n", ESP_ARDUINO_VERSION_STR);
   Serial.printf("META,esp_idf,%s\n", esp_get_idf_version());
@@ -341,6 +351,10 @@ static void print_meta() {
   Serial.printf("META,largest_free_block,%u\n",
                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
   Serial.println("META,radio,Wi-Fi and Bluetooth never started");
+}
+
+static void print_meta() {                       // Step 1
+  print_meta_common();
   Serial.printf("META,runs,%d (RSA keygen %d, warm-up %d, repeat check %d)\n", BENCH_RUNS, RSA_KEYGEN_RUNS,
                 WARMUP_RUNS, REPEAT_RUNS);
   Serial.printf("META,message_bytes,%d\n", MSG_SIZE);
@@ -350,43 +364,10 @@ static void print_meta() {
   Serial.println("META,timer,CPU cycle counter; RSA keygen esp_timer (us x 240). RAW values are CPU cycles");
 }
 
-void setup() {
-  Serial.begin(115200);
-  setCpuFrequencyMhz(CPU_MHZ);
-  delay(500);
-  while (true) {                                 // wait for the start command
-    Serial.println("Ready. Send S to start the benchmark (about 40-50 minutes).");
-    uint32_t t = millis();
-    bool go = false;
-    while (millis() - t < 3000) {
-      if (Serial.available()) {
-        char c = Serial.read();
-        if (c == 'S' || c == 's') { go = true; break; }
-      }
-      delay(10);
-    }
-    if (go) break;
-  }
-  while (Serial.available()) Serial.read();
+void run_e2();                                   // Step 2, in e2_payload.ino
 
-  Serial.println("### BEGIN SIG_BENCH");
-  if (getCpuFrequencyMhz() != CPU_MHZ) {
-    Serial.printf("ERROR,cpu,clock is %u MHz, expected %d. Set CPU Frequency to 240 MHz.\n",
-                  (unsigned)getCpuFrequencyMhz(), CPU_MHZ);
-    Serial.println("### END SIG_BENCH");
-    return;
-  }
-  if (!algorithms_init()) {
-    Serial.println("ERROR,init,mbedTLS or libsodium set-up failed");
-    Serial.println("### END SIG_BENCH");
-    return;
-  }
-
-  // One stack size for every measurement task: as wanted, or what the heap allows
-  size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-  g_stack_bytes = STACK_BYTES_WANTED;
-  if (largest < g_stack_bytes + 8192) g_stack_bytes = ((largest - 8192) / 4096) * 4096;
-  run_in_task(probe_empty, nullptr, &g_stack_baseline);
+// Step 1: all algorithms on 64-byte messages
+static void run_e1() {
   print_meta();
   uint32_t cal_used = 0;
   run_in_task(probe_calibration, nullptr, &cal_used);
@@ -413,6 +394,50 @@ void setup() {
   Serial.printf("META,total_seconds,%.1f\n", (esp_timer_get_time() - t_start) / 1e6);
   Serial.println("### END SIG_BENCH");
   print_table();
+}
+
+void setup() {
+  Serial.begin(115200);
+  setCpuFrequencyMhz(CPU_MHZ);
+  delay(500);
+  int experiment = 0;
+  while (experiment == 0) {                      // wait for the start command
+    Serial.println("Ready. Send S for Step 1 (all algorithms, about 40 minutes) "
+                   "or P for Step 2 (message sizes, about 20 minutes).");
+    uint32_t t = millis();
+    while (millis() - t < 3000 && experiment == 0) {
+      if (Serial.available()) {
+        char c = Serial.read();
+        if (c == 'S' || c == 's') experiment = 1;
+        if (c == 'P' || c == 'p') experiment = 2;
+      }
+      delay(10);
+    }
+  }
+  while (Serial.available()) Serial.read();
+  const char* marker = experiment == 1 ? "SIG_BENCH" : "PAYLOAD_BENCH";
+
+  Serial.printf("### BEGIN %s\n", marker);
+  if (getCpuFrequencyMhz() != CPU_MHZ) {
+    Serial.printf("ERROR,cpu,clock is %u MHz, expected %d. Set CPU Frequency to 240 MHz.\n",
+                  (unsigned)getCpuFrequencyMhz(), CPU_MHZ);
+    Serial.printf("### END %s\n", marker);
+    return;
+  }
+  if (!algorithms_init()) {
+    Serial.println("ERROR,init,mbedTLS or libsodium set-up failed");
+    Serial.printf("### END %s\n", marker);
+    return;
+  }
+
+  // One stack size for every measurement task: as wanted, or what the heap allows
+  size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  g_stack_bytes = STACK_BYTES_WANTED;
+  if (largest < g_stack_bytes + 8192) g_stack_bytes = ((largest - 8192) / 4096) * 4096;
+  run_in_task(probe_empty, nullptr, &g_stack_baseline);
+
+  if (experiment == 1) run_e1();
+  else run_e2();
 }
 
 void loop() {

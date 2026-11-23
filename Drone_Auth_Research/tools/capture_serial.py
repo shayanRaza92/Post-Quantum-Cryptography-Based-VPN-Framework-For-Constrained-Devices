@@ -3,11 +3,13 @@
 
 Close the Arduino Serial Monitor first: only one program can use the port.
 
-    python3 tools/capture_serial.py --port /dev/ttyUSB0
+    python3 tools/capture_serial.py --port /dev/ttyUSB0                   # Step 1
+    python3 tools/capture_serial.py --port /dev/ttyUSB0 --experiment e2   # Step 2
 
 What it does:
-  * opens the port (this usually resets the ESP32), waits for "Ready." and sends "S";
-  * writes every line to results/e1/raw/sig_bench_<date>_<time>.log;
+  * opens the port (this usually resets the ESP32), waits for "Ready." and sends the start
+    command ("S" for Step 1, "P" for Step 2);
+  * writes every line to results/<experiment>/raw/<name>_<date>_<time>.log;
   * adds HOST lines with the date, the git commit and the port, for reproducibility;
   * shows progress (not the RAW sample lines) and stops a few seconds after the end.
 """
@@ -24,7 +26,9 @@ except ImportError:
     sys.exit("pyserial is missing. Install it with: pip install pyserial")
 
 ROOT = Path(__file__).resolve().parents[1]
-SHOW = ("PROGRESS", "KAT", "SUM", "SIZE", "STACK", "HEAP", "LEAK", "ERROR", "WARN", "META,total", "###")
+SHOW = ("PROGRESS", "KAT", "SUM", "SIZE", "STACK", "HEAP", "LEAK", "MAXMSG", "E2STACK", "ERROR", "WARN",
+        "META,total", "###")
+EXPERIMENTS = {"e1": ("S", "SIG_BENCH"), "e2": ("P", "PAYLOAD_BENCH")}
 
 
 def git_info():
@@ -41,11 +45,12 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port", required=True, help="serial port, e.g. /dev/ttyUSB0")
     ap.add_argument("--baud", type=int, default=115200)
-    ap.add_argument("--out", default=str(ROOT / "results" / "e1" / "raw"), help="folder for the log file")
-    ap.add_argument("--marker", default="SIG_BENCH", help="name after '### BEGIN'/'### END'")
+    ap.add_argument("--experiment", choices=sorted(EXPERIMENTS), default="e1", help="e1 = Step 1, e2 = Step 2")
+    ap.add_argument("--out", help="folder for the log file (default: results/<experiment>/raw)")
     args = ap.parse_args()
+    command, args.marker = EXPERIMENTS[args.experiment]
 
-    out_dir = Path(args.out)
+    out_dir = Path(args.out) if args.out else ROOT / "results" / args.experiment / "raw"
     out_dir.mkdir(parents=True, exist_ok=True)
     stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
     log_path = out_dir / f"{args.marker.lower()}_{stamp}.log"
@@ -67,7 +72,7 @@ def main():
                 log.write(line + "\n")
                 log.flush()
                 if not started and line.startswith("Ready."):
-                    port.write(b"S\n")
+                    port.write(command.encode() + b"\n")
                     started = True
                     print("Sent start command.")
                 elif line.startswith(SHOW):
@@ -80,7 +85,8 @@ def main():
                 print("No data for 10 minutes. Is the board still running? (Ctrl+C to stop)")
                 last_data = now
     print(f"\nDone. Log saved to {log_path}")
-    print(f"Next: python3 tools/analyze_sig_bench.py {log_path}")
+    tool = "analyze_sig_bench.py" if args.experiment == "e1" else "analyze_payload.py"
+    print(f"Next: python3 tools/{tool} {log_path}")
 
 
 if __name__ == "__main__":

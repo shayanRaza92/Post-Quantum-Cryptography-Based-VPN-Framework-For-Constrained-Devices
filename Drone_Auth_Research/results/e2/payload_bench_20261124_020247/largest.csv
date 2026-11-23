@@ -1,0 +1,7 @@
+algorithm,largest_ok_bytes,first_fail_bytes,limit,stack_given_B,free_heap_B,largest_free_block_B,sign_ms_at_largest
+Ed25519,110536,110590,message_buffer_did_not_fit,12288,274192,110580,24.232
+ECDSA-P256,110536,110590,message_buffer_did_not_fit,11264,273752,110580,172.170
+RSA-3072,110536,110590,message_buffer_did_not_fit,10240,269252,110580,385.275
+ML-DSA-44,110536,110590,message_buffer_did_not_fit,23552,274084,110580,147.625
+ML-DSA-65,110536,110590,message_buffer_did_not_fit,28672,274084,110580,443.767
+ML-DSA-87,110536,110590,message_buffer_did_not_fit,32768,274084,110580,210.406

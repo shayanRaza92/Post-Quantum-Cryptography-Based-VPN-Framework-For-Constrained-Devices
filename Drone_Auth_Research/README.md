@@ -13,8 +13,8 @@ We work step by step and collect results first. The paper comes later.
 
 | Step | What | Status |
 |---|---|---|
-| 1 | All six algorithms timed on one ESP32 under the same conditions: speed, sizes, memory, flash | **Ready to run** |
-| 2 | How the time grows with message size, and the largest message the ESP32 can sign | Planned |
+| 1 | All six algorithms timed on one ESP32 under the same conditions: speed, sizes, memory, flash | **Done** (results in `results/e1/`) |
+| 2 | How the time grows with message size, and the largest message the ESP32 can sign | **Ready to run** |
 | 3 | The authentication messages on the network, captured with Wireshark | Planned |
 | 4 | Sequence diagrams for the drone scenario | Planned |
 | 5 | MPU6050 sensor: signed drone telemetry | Planned |
@@ -114,6 +114,25 @@ Made with `bash tools/flash_footprint.sh`. Each line is the firmware with only t
 | ML-DSA-87 | 14,052 B |
 
 The three ML-DSA levels need almost the same flash, because they run the same code with different parameters.
+
+---
+
+## Step 2: message size and the largest message
+
+The same firmware does Step 2 when you send **P** instead of **S**. Nothing has to be changed in the code.
+
+| Part | What | How |
+|---|---|---|
+| A | Time vs message size | Each algorithm signs and verifies the same messages of 64 B, 256 B, 1 KB, 4 KB, 16 KB and 64 KB, 100 times per size |
+| B | Largest message the ESP32 can sign | A search for the biggest message that can still be kept in RAM, signed and verified. Each algorithm gets only the stack it was measured to need (+ 8 KB), and the message is placed in RAM inside that task, as in a real drone firmware. The limit that stopped it is reported |
+| C | Calculated from A and B | The largest message that can be signed within 20, 50 or 100 ms, and how much data still fits next to the signature in one MAVLink 2 message (255 B), ESP-NOW frame (250 B / 1,470 B) or ESP32 TCP segment (1,436 B) |
+
+**How to run it (about 20 minutes).** Upload the firmware (the same `sig_bench_unified.ino`), close the Serial Monitor, then:
+```bash
+python3 tools/capture_serial.py --port /dev/ttyUSB0 --experiment e2
+python3 tools/analyze_payload.py results/e2/raw/payload_bench_<date>_<time>.log
+```
+The tables are in `results/e2/payload_bench_<date>_<time>/results.md` and the figure in its `figures/` folder.
 
 ### Software versions
 

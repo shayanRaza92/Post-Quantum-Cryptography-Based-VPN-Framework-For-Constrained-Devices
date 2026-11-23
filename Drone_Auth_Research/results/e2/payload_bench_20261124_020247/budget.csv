@@ -1,0 +1,7 @@
+algorithm,20ms_median_bytes,20ms_p95_bytes,50ms_median_bytes,50ms_p95_bytes,100ms_median_bytes,100ms_p95_bytes
+Ed25519,79464,79400,110536,110536,110536,110536
+ECDSA-P256,0,0,0,0,0,0
+RSA-3072,0,0,0,0,0,0
+ML-DSA-44,0,0,0,0,67028,0
+ML-DSA-65,0,0,0,0,0,0
+ML-DSA-87,0,0,0,0,0,0
