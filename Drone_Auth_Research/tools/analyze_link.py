@@ -194,8 +194,10 @@ def figures(summary, out):
     plt.close(fig)
 
 
-RADIO_BPS = 57600          # a common MAVLink telemetry radio serial speed
-MAVLINK2_OVERHEAD = 12     # MAVLink 2 per message: 10-byte header + 2-byte checksum (unsigned)
+RADIO_BPS = 57600          # a common MAVLink telemetry radio serial speed (baud)
+BITS_PER_BYTE = 10         # serial line 8N1: start bit + 8 data bits + stop bit
+MAVLINK2_OVERHEAD = 12     # MAVLink 2 per packet: 10-byte header + 2-byte checksum (mavlink.io serialization)
+MAVLINK2_SIGNATURE = 13    # optional MAVLink 2 signing: link id 1 + timestamp 6 + signature 6 (mavlink.io)
 
 
 def main():
@@ -327,15 +329,20 @@ def main():
                  "version that keeps IP fragments.**")
     L += ["\n## Calculated: sending the signed message over a 57.6 kbit/s MAVLink telemetry radio\n",
           "Uses the measured message length and frame count (MAVLink-sized style) and adds MAVLink 2's 12 bytes of "
-          "header and checksum per frame. No IP/UDP headers on a serial radio. Time = bytes x 8 / 57,600.\n",
-          "| Algorithm | Data (B) | Frames | Bytes on the radio | Time on the radio (ms) |", "|---|---:|---:|---:|---:|"]
+          "header and checksum per frame. No IP/UDP headers on a serial radio. A 57,600-baud serial line sends 10 bits "
+          "per byte (start bit, 8 data bits, stop bit), so time = bytes x 10 / 57,600. Last column: with MAVLink 2's "
+          "own message signing switched on as well (13 more bytes per frame).\n",
+          "| Algorithm | Data (B) | Frames | Bytes on the radio | Time on the radio (ms) | With MAVLink signing (ms) |",
+          "|---|---:|---:|---:|---:|---:|"]
     for s_ in summary:
         if s_["style"] == "mav" and s_["data_len"] in (64, 1024):
             ml = [int(p["message_len"]) for p in per if p["algorithm"] == s_["algorithm"] and p["style"] == "mav"
                   and p["data_len"] == s_["data_len"] and p["message_len"]]
             if ml and s_["packets_median"] == s_["packets_median"]:
                 byts = max(ml) + int(s_["packets_median"]) * MAVLINK2_OVERHEAD
-                L.append(f"| {s_['algorithm']} | {s_['data_len']:,} | {int(s_['packets_median'])} | {byts:,} | {byts * 8000 / RADIO_BPS:,.0f} |")
+                signed = byts + int(s_["packets_median"]) * MAVLINK2_SIGNATURE
+                L.append(f"| {s_['algorithm']} | {s_['data_len']:,} | {int(s_['packets_median'])} | {byts:,} | "
+                         f"{byts * BITS_PER_BYTE * 1000 / RADIO_BPS:,.0f} | {signed * BITS_PER_BYTE * 1000 / RADIO_BPS:,.0f} |")
     total = len(per)
     lost = sum(p["lost"] for p in per)
     verified = sum(p["verified"] for p in per)

@@ -97,9 +97,10 @@ Ed25519 19.5\,ms, ML-DSA-44 90.7\,ms, RSA-3072 440\,ms.
   \item \textbf{ML-DSA-44:} the answer has to be cut into \textbf{10 frames}. On Wi-Fi all 10 leave
         within 0.4\,ms, because Wi-Fi is fast.
   \item \textbf{On a real drone radio it is very different.} Typical drone telemetry radios run at
-        57.6\,kbit/s. At that speed the Ed25519 answer takes about \textbf{21\,ms} to send, but the
-        ML-DSA-44 answer takes about \textbf{363\,ms}, and every one of the 10 frames must arrive.
-        This is calculated from the measured sizes; we did not use a real telemetry radio.
+        57,600 baud, which carries 5,760 bytes per second. At that speed the Ed25519 answer takes about
+        \textbf{26\,ms} to send, but the ML-DSA-44 answer takes about \textbf{454\,ms}, and every one of
+        the 10 frames must arrive. This is calculated from the measured sizes with the MAVLink 2 packet
+        format (12 bytes of header and checksum per frame); we did not use a real telemetry radio.
 \end{itemize}
 
 % ---------------------------------------------------------------------------

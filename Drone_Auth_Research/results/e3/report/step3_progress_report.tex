@@ -40,7 +40,7 @@ a laptop acting as the ground station, and Wireshark recorded every packet. The 
   \item \textbf{In a small ML-DSA authentication, 95--97\% of the bytes are the signature.}
   \item \textbf{On Wi-Fi, the time is mostly the drone's signing.} The network adds only about
         10--20\,ms. On a typical 57.6\,kbit/s drone telemetry radio it would be very different: sending
-        one ML-DSA-44 authentication would take about 0.36\,s, against 0.02\,s for Ed25519.
+        one ML-DSA-44 authentication would take about 0.45\,s, against 0.03\,s for Ed25519.
   \item \textbf{All 1,400 authentications were verified, none lost.}
 \end{enumerate}
 
@@ -60,6 +60,8 @@ a laptop acting as the ground station, and Wireshark recorded every packet. The 
         \emph{Wi-Fi UDP} (the signed message is sent as one message; if it is bigger than one
         1,500-byte Wi-Fi packet, the network splits it) and \emph{MAVLink-sized frames} (the message
         is cut into frames of at most 255 bytes, the size limit of MAVLink, the usual drone protocol).
+        These frames have the size of MAVLink 2 packets but are not real MAVLink packets: each
+        carries our own 10-byte frame header instead of MAVLink's 12 bytes of header and checksum.
   \item \textbf{Data sizes:} 64\,B, 256\,B, 1\,KB, 4\,KB and 8\,KB, plus the exact sizes where one
         packet stops being enough. 20 authentications for every algorithm, style and size: 1,400 in
         total.
@@ -227,26 +229,31 @@ algorithm, but it shows that slow signing can add up to one beacon interval on a
 
 On Wi-Fi, extra packets are cheap. Drones often use a slower telemetry radio. Using the measured
 message sizes and frame counts, this is how long sending one signed message would take on a
-57.6\,kbit/s MAVLink radio (adding MAVLink 2's 12 bytes of header and checksum per frame):
+57.6\,kbit/s MAVLink radio. The calculation follows the MAVLink 2 packet format
+(\url{https://mavlink.io/en/guide/serialization.html}): at most 255 bytes of payload per packet, plus
+10 bytes of header and 2 bytes of checksum. A 57,600-baud serial line sends 10 bits for every byte (a
+start bit, 8 data bits and a stop bit), so it carries 5,760 bytes per second. MAVLink 2 can also sign
+every packet itself, with a key shared by the drone and the ground station; that adds 13 bytes per
+packet (\url{https://mavlink.io/en/guide/message_signing.html}), shown in the last column.
 
 \begin{table}[H]
 \centering\small
-\begin{tabularx}{0.9\textwidth}{@{}l RRR R@{}}
+\begin{tabularx}{\textwidth}{@{}l RRR R R@{}}
 \toprule
- & \multicolumn{3}{c}{\textbf{64 bytes of data}} & \textbf{1 KB of data} \\
-\cmidrule(lr){2-4}\cmidrule(l){5-5}
-Algorithm & Frames & Bytes on the radio & Time & Time \\
+ & \multicolumn{3}{c}{\textbf{64 bytes of data}} & \textbf{1 KB of data} & \textbf{64 B, MAVLink} \\
+\cmidrule(lr){2-4}\cmidrule(lr){5-5}\cmidrule(l){6-6}
+Algorithm & Frames & Bytes on the radio & Time & Time & \textbf{signing on} \\
 \midrule
-Ed25519     & 1  & 152   & 21\,ms  & 161\,ms \\
-ECDSA P-256 & 1  & 160   & 22\,ms  & 162\,ms \\
-RSA-3072    & 2  & 484   & 67\,ms  & 207\,ms \\
-ML-DSA-44   & 10 & 2,616 & 363\,ms & 503\,ms \\
-ML-DSA-65   & 14 & 3,553 & 493\,ms & 633\,ms \\
-ML-DSA-87   & 19 & 4,931 & 685\,ms & 825\,ms \\
+Ed25519     & 1  & 152   & 26\,ms  & 201\,ms   & 29\,ms \\
+ECDSA P-256 & 1  & 160   & 28\,ms  & 203\,ms   & 30\,ms \\
+RSA-3072    & 2  & 484   & 84\,ms  & 259\,ms   & 89\,ms \\
+ML-DSA-44   & 10 & 2,616 & 454\,ms & 629\,ms   & 477\,ms \\
+ML-DSA-65   & 14 & 3,553 & 617\,ms & 792\,ms   & 648\,ms \\
+ML-DSA-87   & 19 & 4,931 & 856\,ms & 1,031\,ms & 899\,ms \\
 \bottomrule
 \end{tabularx}
-\caption{Calculated time to send one signed message over a 57.6\,kbit/s radio (bytes $\times$ 8 /
-57,600), from the measured message sizes. Not measured on a real radio.}
+\caption{Calculated time to send one signed message over a 57,600-baud MAVLink radio (bytes $\times$ 10
+/ 57,600), from the measured message sizes. Not measured on a real radio.}
 \end{table}
 
 On such a radio, one ML-DSA-44 authentication takes about 17 times longer to send than an Ed25519 one,

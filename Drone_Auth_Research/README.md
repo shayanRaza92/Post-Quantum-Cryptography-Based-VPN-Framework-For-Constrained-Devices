@@ -17,7 +17,7 @@ We work step by step and collect results first. The paper comes later.
 | 2 | How the time grows with message size, and the largest message the ESP32 can sign | **Done** (results in `results/e2/`) |
 | 3 | The authentication messages on a real Wi-Fi link, captured with Wireshark | **Done** (results in `results/e3/`) |
 | 4 | Sequence diagrams for the drone scenario | **Done** (results in `results/e4/`) |
-| 5 | MPU6050 sensor: signed drone telemetry | Planned |
+| 5 | MPU6050 sensor: signed drone telemetry (simulated sensor data if no sensor is connected) | **Done** (results in `results/e5/`) |
 
 ---
 
@@ -26,7 +26,7 @@ We work step by step and collect results first. The paper comes later.
 ```
 Drone_Auth_Research/
 ├── arduino_libraries/MLDSA_Levels/   ML-DSA-44, -65 and -87 in one firmware (unmodified mldsa-native source)
-├── firmware/sig_bench_unified/       Step 1 firmware: times all six algorithms
+├── firmware/sig_bench_unified/       the firmware for Steps 1, 2, 3 and 5
 ├── tools/
 │   ├── capture_serial.py             saves the ESP32 output to a log file and starts the run
 │   ├── analyze_sig_bench.py          turns the log into tables (CSV + Markdown)
@@ -166,6 +166,27 @@ Three diagrams that show who sends what, in which order, with the numbers measur
 * **fig10**: where signatures are used in a whole drone mission (registration, before take-off, signed commands, signed sensor data).
 
 To draw them again: `python3 tools/draw_sequence_diagrams.py` (writes PDF and PNG to `results/e4/figures/`). The explanation is in `results/e4/report/step4_progress_report.pdf`.
+
+---
+
+## Step 5: signed sensor telemetry (MPU6050)
+
+A drone sends its sensor readings (accelerometer and gyroscope) many times per second. Step 5 measures what signing them costs on the ESP32:
+
+* **sig1**: every sample is signed on its own.
+* **sig10**: 10 samples are collected, then signed together (fewer signatures, but older data).
+* **mavsign**: MAVLink 2's own message signing, which drones use today: a 13-byte signature on every packet, made with a key shared by the drone and the ground station ([mavlink.io](https://mavlink.io/en/guide/message_signing.html)). It is fast, but the shared key has to be set up safely first; the public-key authentication of Step 3 can do that once.
+
+Each mode runs at 10, 50 and 100 samples per second, 10 seconds each. A high-priority sensor task takes the samples on a timer, and a separate task signs them. The firmware also runs one "simple loop" test (read the sensor, then sign, in one loop) to show what happens when signing is slower than the sample period. Measured: how many samples get signed, how old the data is when its signature is ready, and whether the samples are still taken on time.
+
+**The sensor:** if an MPU6050 answers on I2C (SDA = GPIO 21, SCL = GPIO 22; on an ESP32duino these are the pins marked SDA and SCL next to AREF), it is read for real. If not, the firmware uses **simulated** samples: the same 14 bytes in the same layout as a real MPU6050. Signing only depends on how many bytes there are, not what they say. The log says which one was used (`META,sensor`), and also lists what it found on the I2C bus, which helps when checking the wiring.
+
+**How to run it (about 12 minutes):**
+1. Upload the firmware as usual (`ENABLE_LINK_TEST` stays `0`; no Wi-Fi is needed). Close the Serial Monitor.
+2. `python3 tools/capture_serial.py --port /dev/ttyUSB0 --experiment e5`
+3. `python3 tools/analyze_telemetry.py results/e5/raw/telemetry_bench_<date>_<time>.log`
+
+Results go to `results/e5/<log name>/`: tables (`runs.csv`, `capacity.csv`, `radio.csv`, `results.md`) and figures fig11–fig14.
 
 ### Software versions
 

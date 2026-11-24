@@ -100,22 +100,22 @@ Styles: **udp** = one UDP datagram per message (split by the IP layer into 1,500
 
 ## Calculated: sending the signed message over a 57.6 kbit/s MAVLink telemetry radio
 
-Uses the measured message length and frame count (MAVLink-sized style) and adds MAVLink 2's 12 bytes of header and checksum per frame. No IP/UDP headers on a serial radio. Time = bytes x 8 / 57,600.
+Uses the measured message length and frame count (MAVLink-sized style) and adds MAVLink 2's 12 bytes of header and checksum per frame. No IP/UDP headers on a serial radio. A 57,600-baud serial line sends 10 bits per byte (start bit, 8 data bits, stop bit), so time = bytes x 10 / 57,600. Last column: with MAVLink 2's own message signing switched on as well (13 more bytes per frame).
 
-| Algorithm | Data (B) | Frames | Bytes on the radio | Time on the radio (ms) |
-|---|---:|---:|---:|---:|
-| Ed25519 | 64 | 1 | 152 | 21 |
-| Ed25519 | 1,024 | 5 | 1,160 | 161 |
-| ECDSA-P256 | 64 | 1 | 160 | 22 |
-| ECDSA-P256 | 1,024 | 5 | 1,168 | 162 |
-| RSA-3072 | 64 | 2 | 484 | 67 |
-| RSA-3072 | 1,024 | 6 | 1,492 | 207 |
-| ML-DSA-44 | 64 | 10 | 2,616 | 363 |
-| ML-DSA-44 | 1,024 | 14 | 3,624 | 503 |
-| ML-DSA-65 | 64 | 14 | 3,553 | 493 |
-| ML-DSA-65 | 1,024 | 18 | 4,561 | 633 |
-| ML-DSA-87 | 64 | 19 | 4,931 | 685 |
-| ML-DSA-87 | 1,024 | 23 | 5,939 | 825 |
+| Algorithm | Data (B) | Frames | Bytes on the radio | Time on the radio (ms) | With MAVLink signing (ms) |
+|---|---:|---:|---:|---:|---:|
+| Ed25519 | 64 | 1 | 152 | 26 | 29 |
+| Ed25519 | 1,024 | 5 | 1,160 | 201 | 213 |
+| ECDSA-P256 | 64 | 1 | 160 | 28 | 30 |
+| ECDSA-P256 | 1,024 | 5 | 1,168 | 203 | 214 |
+| RSA-3072 | 64 | 2 | 484 | 84 | 89 |
+| RSA-3072 | 1,024 | 6 | 1,492 | 259 | 273 |
+| ML-DSA-44 | 64 | 10 | 2,616 | 454 | 477 |
+| ML-DSA-44 | 1,024 | 14 | 3,624 | 629 | 661 |
+| ML-DSA-65 | 64 | 14 | 3,553 | 617 | 648 |
+| ML-DSA-65 | 1,024 | 18 | 4,561 | 792 | 832 |
+| ML-DSA-87 | 64 | 19 | 4,931 | 856 | 899 |
+| ML-DSA-87 | 1,024 | 23 | 5,939 | 1,031 | 1,083 |
 
 Network + ground station = challenge-to-verified time minus the drone's signing time (per message, then median). Transfer = time between the first and the last packet of the signed message in the capture.
 

@@ -2,6 +2,7 @@
 //   Send S: Step 1, all algorithms on 64-byte messages (this file)
 //   Send P: Step 2, message size and largest signable message (e2_payload.ino)
 //   Send W: Step 3, authentication over a real Wi-Fi link (e3_link.ino, needs ENABLE_LINK_TEST 1)
+//   Send T: Step 5, signed MPU6050 telemetry (e5_telemetry.ino; simulated sensor if none is found)
 //
 // Times Ed25519, ECDSA P-256, RSA-3072, ML-DSA-44, ML-DSA-65 and ML-DSA-87 on ONE ESP32,
 // in ONE firmware, under the same conditions, so the numbers can be compared directly:
@@ -29,10 +30,14 @@
 
 #include "bench_config.h"
 #include "algorithms.h"
+#include <Wire.h>                                  // Step 5 sensor (I2C)
 #if ENABLE_LINK_TEST                               // Step 3 networking (here, so that the
 #include <WiFi.h>                                  // Arduino-generated declarations see the types)
 #include "lwip/sockets.h"
 #endif
+
+struct E5Run;                                       // Step 5 (e5_telemetry.ino), for the generated prototypes
+struct E5Sample;
 
 static_assert(RSA_KEYGEN_RUNS <= BENCH_RUNS, "RSA_KEYGEN_RUNS must not exceed BENCH_RUNS");
 static_assert(BENCH_RUNS <= 65535, "BENCH_RUNS too large");
@@ -340,7 +345,7 @@ static void print_table() {
 
 // ---- Start-up ---------------------------------------------------------------------------
 static void print_meta_common() {
-  Serial.println("META,firmware,sig_bench_unified v2 (Drone_Auth_Research steps 1 and 2)");
+  Serial.println("META,firmware,sig_bench_unified v3 (Drone_Auth_Research steps 1, 2, 3 and 5)");
   Serial.printf("META,build,%s %s\n", __DATE__, __TIME__);
   Serial.printf("META,arduino_core,%s\n", ESP_ARDUINO_VERSION_STR);
   Serial.printf("META,esp_idf,%s\n", esp_get_idf_version());
@@ -371,6 +376,7 @@ static void print_meta() {                       // Step 1
 
 void run_e2();                                   // Step 2, in e2_payload.ino
 void run_e3();                                   // Step 3, in e3_link.ino
+void run_e5();                                   // Step 5, in e5_telemetry.ino
 
 // Step 1: all algorithms on 64-byte messages
 static void run_e1() {
@@ -409,7 +415,8 @@ void setup() {
   int experiment = 0;
   while (experiment == 0) {                      // wait for the start command
     Serial.println("Ready. Send S for Step 1 (all algorithms, about 40 minutes), "
-                   "P for Step 2 (message sizes, about 20 minutes) or W for Step 3 (Wi-Fi link).");
+                   "P for Step 2 (message sizes, about 20 minutes), W for Step 3 (Wi-Fi link) "
+                   "or T for Step 5 (signed sensor telemetry, about 12 minutes).");
     uint32_t t = millis();
     while (millis() - t < 3000 && experiment == 0) {
       if (Serial.available()) {
@@ -417,12 +424,14 @@ void setup() {
         if (c == 'S' || c == 's') experiment = 1;
         if (c == 'P' || c == 'p') experiment = 2;
         if (c == 'W' || c == 'w') experiment = 3;
+        if (c == 'T' || c == 't') experiment = 5;
       }
       delay(10);
     }
   }
   while (Serial.available()) Serial.read();
-  const char* marker = experiment == 1 ? "SIG_BENCH" : experiment == 2 ? "PAYLOAD_BENCH" : "LINK_TEST";
+  const char* marker = experiment == 1 ? "SIG_BENCH" : experiment == 2 ? "PAYLOAD_BENCH"
+                     : experiment == 3 ? "LINK_TEST" : "TELEMETRY_BENCH";
 
   Serial.printf("### BEGIN %s\n", marker);
   if (getCpuFrequencyMhz() != CPU_MHZ) {
@@ -445,7 +454,8 @@ void setup() {
 
   if (experiment == 1) run_e1();
   else if (experiment == 2) run_e2();
-  else run_e3();
+  else if (experiment == 3) run_e3();
+  else run_e5();
 }
 
 void loop() {

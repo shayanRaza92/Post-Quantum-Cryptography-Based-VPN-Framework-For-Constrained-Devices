@@ -108,11 +108,11 @@ def fig9():
     """Two real exchanges side by side (MAVLink-sized frames, 64 B of data), not to scale."""
     fig, axes = plt.subplots(1, 2, figsize=(7.0, 3.3))
     cases = [("Ed25519", [("0.00 ms", "CHALLENGE", "G"), ("18.91 ms", "AUTH  frame 1/1  (140 B)", "D"),
-                          ("19.98 ms", "RESULT", "G")], "1 frame, 152 B on a radio:\n21 ms at 57.6 kbit/s"),
+                          ("19.98 ms", "RESULT", "G")], "1 frame, 152 B on a radio:\n26 ms at 57,600 baud"),
              ("ML-DSA-44", [("0.00 ms", "CHALLENGE", "G"), ("44.51 ms", "AUTH  frame 1/10  (255 B)", "D"),
                             ("", "frame 2/10", "D"), ("", "frame 3/10", "D"), ("", "...", "dots"),
                             ("", "frame 9/10", "D"), ("44.87 ms", "AUTH  frame 10/10  (201 B)", "D"),
-                            ("45.71 ms", "RESULT", "G")], "10 frames, 2,616 B on a radio:\n363 ms at 57.6 kbit/s")]
+                            ("45.71 ms", "RESULT", "G")], "10 frames, 2,616 B on a radio:\n454 ms at 57,600 baud")]
     for ax, (alg, events, footer) in zip(axes, cases):
         ax.set_xlim(0, 3.6)
         ax.set_ylim(-3.35, 0.4)
@@ -137,8 +137,8 @@ def fig9():
                     ax.text(0.12, y, t, ha="left", va="center", fontsize=6, color=INK2)
             y -= step
         ax.text((xd + xg) / 2, -3.15, footer, ha="center", va="center", fontsize=6.8, color=INK, linespacing=1.3)
-    fig.text(0.5, 0.005, "Times: from the Step 3 Wireshark recording (challenge leaving the ground station = 0). "
-             "Radio times: calculated from the measured sizes.", ha="center", va="bottom", fontsize=6.3, color=INK2)
+    fig.text(0.5, 0.005, "Times: from the Step 3 Wireshark recording (challenge leaving the ground station = 0).\n"
+             "Radio times: calculated from the measured sizes (MAVLink 2 framing, 10 bits per byte).", linespacing=1.4, ha="center", va="bottom", fontsize=6.3, color=INK2)
     OUT.mkdir(parents=True, exist_ok=True)
     fig.savefig(OUT / "fig9_seq_packets.pdf")
     fig.savefig(OUT / "fig9_seq_packets.png")

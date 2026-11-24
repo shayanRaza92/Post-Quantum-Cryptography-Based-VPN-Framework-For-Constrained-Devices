@@ -6,10 +6,11 @@ Close the Arduino Serial Monitor first: only one program can use the port.
     python3 tools/capture_serial.py --port /dev/ttyUSB0                   # Step 1
     python3 tools/capture_serial.py --port /dev/ttyUSB0 --experiment e2   # Step 2
     python3 tools/capture_serial.py --port /dev/ttyUSB0 --experiment e3   # Step 3 (then gcs_link_test.py)
+    python3 tools/capture_serial.py --port /dev/ttyUSB0 --experiment e5   # Step 5
 
 What it does:
   * opens the port (this usually resets the ESP32), waits for "Ready." and sends the start
-    command ("S" for Step 1, "P" for Step 2, "W" for Step 3);
+    command ("S" for Step 1, "P" for Step 2, "W" for Step 3, "T" for Step 5);
   * writes every line to results/<experiment>/raw/<name>_<date>_<time>.log;
   * adds HOST lines with the date, the git commit and the port, for reproducibility;
   * shows progress (not the RAW sample lines) and stops a few seconds after the end.
@@ -28,8 +29,9 @@ except ImportError:
 
 ROOT = Path(__file__).resolve().parents[1]
 SHOW = ("PROGRESS", "KAT", "SUM", "SIZE", "STACK", "HEAP", "LEAK", "MAXMSG", "E2STACK", "ERROR", "WARN",
-        "META,total", "META,drone_ip", "META,wifi", "LINK", "KEY", "###")
-EXPERIMENTS = {"e1": ("S", "SIG_BENCH"), "e2": ("P", "PAYLOAD_BENCH"), "e3": ("W", "LINK_TEST")}
+        "META,total", "META,drone_ip", "META,wifi", "META,sensor", "SENSOR", "E5RUN", "LINK", "KEY", "###")
+CRASH = ("Guru Meditation", "CORRUPT HEAP", "assert failed", "Backtrace", "Rebooting", "rst:", "Ready.")
+EXPERIMENTS = {"e1": ("S", "SIG_BENCH"), "e2": ("P", "PAYLOAD_BENCH"), "e3": ("W", "LINK_TEST"), "e5": ("T", "TELEMETRY_BENCH")}
 
 
 def git_info():
@@ -46,7 +48,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port", required=True, help="serial port, e.g. /dev/ttyUSB0")
     ap.add_argument("--baud", type=int, default=115200)
-    ap.add_argument("--experiment", choices=sorted(EXPERIMENTS), default="e1", help="e1 = Step 1, e2 = Step 2, e3 = Step 3")
+    ap.add_argument("--experiment", choices=sorted(EXPERIMENTS), default="e1", help="e1 = Step 1, e2 = Step 2, e3 = Step 3, e5 = Step 5")
     ap.add_argument("--out", help="folder for the log file (default: results/<experiment>/raw)")
     args = ap.parse_args()
     command, args.marker = EXPERIMENTS[args.experiment]
@@ -76,6 +78,12 @@ def main():
                     port.write(command.encode() + b"\n")
                     started = True
                     print("Sent start command.")
+                elif started and not ended and line.startswith(CRASH):
+                    print(line)
+                    if line.startswith("Ready."):
+                        print("\nThe ESP32 restarted in the middle of the run (see the lines above). "
+                              "Stopping; the log was saved.")
+                        break
                 elif line.startswith(SHOW):
                     print(line)
                 if line.startswith(f"### END {args.marker}"):
@@ -89,7 +97,7 @@ def main():
     if args.experiment == "e3":
         print("Next: python3 tools/analyze_link.py results/e3/raw/link_<date>_<time>  (the folder gcs_link_test.py made)")
     else:
-        tool = "analyze_sig_bench.py" if args.experiment == "e1" else "analyze_payload.py"
+        tool = {"e1": "analyze_sig_bench.py", "e2": "analyze_payload.py", "e5": "analyze_telemetry.py"}[args.experiment]
         print(f"Next: python3 tools/{tool} {log_path}")
 
 

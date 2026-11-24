@@ -30,6 +30,20 @@
 #define ENABLE_LINK_TEST 0
 #endif
 
+// ---- Step 5 (send T): signed MPU6050 telemetry ----------------------------------------
+#define E5_SECONDS          10      // length of every run
+#define E5_RATES            {10, 50, 100}   // sensor sample rates tested (samples per second)
+#define E5_BATCH            10      // samples signed together in mode "sig10"
+#define E5_INLINE_RATE      50      // rate for the simple-loop ("inline") runs
+#define E5_BUFFER_MS        500     // unsigned samples kept at most (task); the oldest are dropped
+#define E5_SAMPLER_PRIORITY 10      // sensor task: above the signing task (BENCH_PRIORITY)
+#define E5_SIGN_STACK       (40 * 1024)     // stack of the task that signs (ML-DSA-87 needs ~23 KB)
+#define E5_I2C_SDA          21      // MPU6050 SDA (ESP32duino: the pin marked SDA, next to AREF)
+#define E5_I2C_SCL          22      // MPU6050 SCL (ESP32duino: the pin marked SCL)
+#define E5_I2C_HZ           400000
+#define E5_STR_(x) #x
+#define E5_STR(x) E5_STR_(x)
+
 // ---- Only for tools/flash_footprint.sh: leave out the test-only code -----------------
 #ifndef FOOTPRINT_BUILD
 #define FOOTPRINT_BUILD 0
