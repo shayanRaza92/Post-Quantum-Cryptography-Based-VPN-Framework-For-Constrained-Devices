@@ -1,0 +1,13 @@
+algorithm,style,largest_tested_one_packet_B,smallest_tested_split_B
+Ed25519,udp,1396,1397
+Ed25519,mav,179,180
+ECDSA-P256,udp,1388,1389
+ECDSA-P256,mav,171,172
+RSA-3072,udp,1076,1077
+RSA-3072,mav,0,64
+ML-DSA-44,udp,0,64
+ML-DSA-44,mav,0,64
+ML-DSA-65,udp,0,64
+ML-DSA-65,mav,0,64
+ML-DSA-87,udp,0,64
+ML-DSA-87,mav,0,64

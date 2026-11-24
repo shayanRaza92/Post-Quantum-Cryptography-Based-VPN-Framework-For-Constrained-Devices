@@ -23,6 +23,13 @@
 #define E2_STACK_MARGIN  8192   // extra stack on top of what an algorithm was measured to need
 #define E2_SEARCH_STEP   64     // the largest-message search stops when it is this close (bytes)
 
+// ---- Step 3 (send W): real Wi-Fi link to the laptop ground station --------------------
+// 0 = Wi-Fi is not even built into the firmware (Steps 1 and 2 stay exactly as measured).
+// 1 = Step 3 can run. Also set the Wi-Fi name and password in link_config.h.
+#ifndef ENABLE_LINK_TEST
+#define ENABLE_LINK_TEST 0
+#endif
+
 // ---- Only for tools/flash_footprint.sh: leave out the test-only code -----------------
 #ifndef FOOTPRINT_BUILD
 #define FOOTPRINT_BUILD 0

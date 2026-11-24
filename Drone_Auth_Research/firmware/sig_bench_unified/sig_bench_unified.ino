@@ -1,6 +1,7 @@
 // sig_bench_unified.ino - Steps 1 and 2 (experiments E1 and E2) of the drone authentication study.
 //   Send S: Step 1, all algorithms on 64-byte messages (this file)
 //   Send P: Step 2, message size and largest signable message (e2_payload.ino)
+//   Send W: Step 3, authentication over a real Wi-Fi link (e3_link.ino, needs ENABLE_LINK_TEST 1)
 //
 // Times Ed25519, ECDSA P-256, RSA-3072, ML-DSA-44, ML-DSA-65 and ML-DSA-87 on ONE ESP32,
 // in ONE firmware, under the same conditions, so the numbers can be compared directly:
@@ -28,6 +29,10 @@
 
 #include "bench_config.h"
 #include "algorithms.h"
+#if ENABLE_LINK_TEST                               // Step 3 networking (here, so that the
+#include <WiFi.h>                                  // Arduino-generated declarations see the types)
+#include "lwip/sockets.h"
+#endif
 
 static_assert(RSA_KEYGEN_RUNS <= BENCH_RUNS, "RSA_KEYGEN_RUNS must not exceed BENCH_RUNS");
 static_assert(BENCH_RUNS <= 65535, "BENCH_RUNS too large");
@@ -365,6 +370,7 @@ static void print_meta() {                       // Step 1
 }
 
 void run_e2();                                   // Step 2, in e2_payload.ino
+void run_e3();                                   // Step 3, in e3_link.ino
 
 // Step 1: all algorithms on 64-byte messages
 static void run_e1() {
@@ -402,20 +408,21 @@ void setup() {
   delay(500);
   int experiment = 0;
   while (experiment == 0) {                      // wait for the start command
-    Serial.println("Ready. Send S for Step 1 (all algorithms, about 40 minutes) "
-                   "or P for Step 2 (message sizes, about 20 minutes).");
+    Serial.println("Ready. Send S for Step 1 (all algorithms, about 40 minutes), "
+                   "P for Step 2 (message sizes, about 20 minutes) or W for Step 3 (Wi-Fi link).");
     uint32_t t = millis();
     while (millis() - t < 3000 && experiment == 0) {
       if (Serial.available()) {
         char c = Serial.read();
         if (c == 'S' || c == 's') experiment = 1;
         if (c == 'P' || c == 'p') experiment = 2;
+        if (c == 'W' || c == 'w') experiment = 3;
       }
       delay(10);
     }
   }
   while (Serial.available()) Serial.read();
-  const char* marker = experiment == 1 ? "SIG_BENCH" : "PAYLOAD_BENCH";
+  const char* marker = experiment == 1 ? "SIG_BENCH" : experiment == 2 ? "PAYLOAD_BENCH" : "LINK_TEST";
 
   Serial.printf("### BEGIN %s\n", marker);
   if (getCpuFrequencyMhz() != CPU_MHZ) {
@@ -437,7 +444,8 @@ void setup() {
   run_in_task(probe_empty, nullptr, &g_stack_baseline);
 
   if (experiment == 1) run_e1();
-  else run_e2();
+  else if (experiment == 2) run_e2();
+  else run_e3();
 }
 
 void loop() {

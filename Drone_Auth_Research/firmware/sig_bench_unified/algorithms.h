@@ -25,6 +25,9 @@ struct SigAlgorithm {
 
   size_t pk_bytes;             // public key as sent over the network (raw encoding)
   size_t (*sk_bytes)();        // secret key as stored (RSA: PKCS#1 DER, measured)
+  // Step 3 only: copy the public key (raw encoding, pk_bytes long) to out. nullptr when
+  // ENABLE_LINK_TEST is 0. RSA: the 384-byte modulus (e = 65537).
+  size_t (*export_pk)(uint8_t* out, size_t max);
 };
 
 // Set up shared state (random generator for mbedTLS, libsodium). Returns false on error.

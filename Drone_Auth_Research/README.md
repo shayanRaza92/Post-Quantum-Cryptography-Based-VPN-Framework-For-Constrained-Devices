@@ -14,9 +14,9 @@ We work step by step and collect results first. The paper comes later.
 | Step | What | Status |
 |---|---|---|
 | 1 | All six algorithms timed on one ESP32 under the same conditions: speed, sizes, memory, flash | **Done** (results in `results/e1/`) |
-| 2 | How the time grows with message size, and the largest message the ESP32 can sign | **Ready to run** |
-| 3 | The authentication messages on the network, captured with Wireshark | Planned |
-| 4 | Sequence diagrams for the drone scenario | Planned |
+| 2 | How the time grows with message size, and the largest message the ESP32 can sign | **Done** (results in `results/e2/`) |
+| 3 | The authentication messages on a real Wi-Fi link, captured with Wireshark | **Done** (results in `results/e3/`) |
+| 4 | Sequence diagrams for the drone scenario | **Done** (results in `results/e4/`) |
 | 5 | MPU6050 sensor: signed drone telemetry | Planned |
 
 ---
@@ -133,6 +133,39 @@ python3 tools/capture_serial.py --port /dev/ttyUSB0 --experiment e2
 python3 tools/analyze_payload.py results/e2/raw/payload_bench_<date>_<time>.log
 ```
 The tables are in `results/e2/payload_bench_<date>_<time>/results.md` and the figure in its `figures/` folder.
+
+---
+
+## Step 3: authentication on a real Wi-Fi link (Wireshark)
+
+The ESP32 plays the drone, the laptop the ground station. The ground station sends a random challenge; the drone signs `[challenge, drone id, clock, data]` and sends it back; the ground station checks the signature. This is done for every algorithm, for growing amounts of data, in two link styles:
+
+* **udp**: the whole signed message as one UDP datagram. If it is bigger than one Wi-Fi packet (1,500 bytes), the network splits it into several packets.
+* **mav**: the message cut into MAVLink-sized frames of at most 255 bytes, like a drone radio link.
+
+Wireshark (`dumpcap`) records every packet. From the capture we measure, for each algorithm: packets per signed message, bytes on the wire, the time from challenge to verified signature, losses, and **the largest data that still fits in one packet with the signature**.
+
+**How to run it (about 15 minutes):**
+1. In `bench_config.h` set `ENABLE_LINK_TEST` to `1`. In `link_config.h` set your Wi-Fi name and password (the laptop must be on the same Wi-Fi). Upload, and close the Serial Monitor.
+2. Terminal 1: `python3 tools/capture_serial.py --port /dev/ttyUSB0 --experiment e3` (starts the drone with `W` and saves its messages). Wait until it shows `META,drone_ip`.
+3. Terminal 2: `python3 tools/gcs_link_test.py --iface wlo1` (the ground station; it starts the Wireshark capture itself).
+4. When both are done: `python3 tools/analyze_link.py results/e3/raw/link_<date>_<time>`
+
+To look at the packets in Wireshark with readable names: `wireshark -X lua_script:tools/wireshark/drone_auth.lua results/e3/raw/link_<date>_<time>/capture.pcapng`
+
+Afterwards set `ENABLE_LINK_TEST` back to `0` and the Wi-Fi password back to the placeholder before committing.
+
+---
+
+## Step 4: sequence diagrams
+
+Three diagrams that show who sends what, in which order, with the numbers measured in Steps 1–3 written on them:
+
+* **fig8**: one authentication (challenge, sign, send, verify, result) with the time and size of each part.
+* **fig9**: the same authentication as real packets, Ed25519 (1 frame) against ML-DSA-44 (10 frames), with times from the Step 3 Wireshark recording.
+* **fig10**: where signatures are used in a whole drone mission (registration, before take-off, signed commands, signed sensor data).
+
+To draw them again: `python3 tools/draw_sequence_diagrams.py` (writes PDF and PNG to `results/e4/figures/`). The explanation is in `results/e4/report/step4_progress_report.pdf`.
 
 ### Software versions
 

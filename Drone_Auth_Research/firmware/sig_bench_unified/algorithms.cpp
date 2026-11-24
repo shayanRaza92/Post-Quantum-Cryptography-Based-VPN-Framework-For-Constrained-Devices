@@ -32,6 +32,12 @@
 // In a FOOTPRINT_BUILD (tools/flash_footprint.sh) the test-only code is left out: the
 // known-answer tests, their test vectors and the RSA key DER writer. What remains is what a
 // drone firmware using the algorithm would contain.
+#if ENABLE_LINK_TEST
+#define PK_EXPORT(f) f
+#else
+#define PK_EXPORT(f) nullptr
+#endif
+
 #if FOOTPRINT_BUILD
 static bool kat_not_built() { return true; }
 #define KAT_FN(f) kat_not_built
@@ -156,10 +162,18 @@ static int ed_verify(const uint8_t* m, size_t len, const uint8_t* sig, size_t si
   return crypto_sign_ed25519_verify_detached(sig, m, len, ed_pk);
 }
 static size_t ed_sk_bytes() { return 64; }       // libsodium format: 32-byte seed + public key
+#if ENABLE_LINK_TEST
+static size_t ed_export_pk(uint8_t* out, size_t max) {
+  if (max < 32) return 0;
+  memcpy(out, ed_pk, 32);
+  return 32;
+}
+#endif
 
 static const SigAlgorithm ALG_ED25519 = {
   "Ed25519", "libsodium (ESP-IDF, SHA-512 via mbedTLS)", "~128-bit classical", false, BENCH_RUNS,
-  KAT_FN(ed_kat), ed_keygen_once, ed_make_key, ed_free_key, ed_sign, ed_verify, 32, ed_sk_bytes };
+  KAT_FN(ed_kat), ed_keygen_once, ed_make_key, ed_free_key, ed_sign, ed_verify, 32, ed_sk_bytes,
+  PK_EXPORT(ed_export_pk) };
 #endif
 
 // ========================================================================================
@@ -215,10 +229,18 @@ static int ec_verify(const uint8_t* m, size_t len, const uint8_t* sig, size_t si
   return mbedtls_ecdsa_read_signature(&ec_key, h, 32, sig, siglen);
 }
 static size_t ec_sk_bytes() { return 32; }       // the private scalar
+#if ENABLE_LINK_TEST
+static size_t ec_export_pk(uint8_t* out, size_t max) {   // uncompressed point, 65 bytes
+  size_t olen = 0;
+  if (mbedtls_ecp_write_public_key(&ec_key, MBEDTLS_ECP_PF_UNCOMPRESSED, &olen, out, max) != 0) return 0;
+  return olen;
+}
+#endif
 
 static const SigAlgorithm ALG_ECDSA_P256 = {
   "ECDSA-P256", "mbedTLS 3.6 (hardware MPI + SHA)", "~128-bit classical", false, BENCH_RUNS,
-  KAT_FN(ec_kat), ec_keygen_once, ec_make_key, ec_free_key, ec_sign, ec_verify, 65, ec_sk_bytes };
+  KAT_FN(ec_kat), ec_keygen_once, ec_make_key, ec_free_key, ec_sign, ec_verify, 65, ec_sk_bytes,
+  PK_EXPORT(ec_export_pk) };
 #endif
 
 // ========================================================================================
@@ -289,10 +311,19 @@ static size_t rsa_sk_bytes() {                   // PKCS#1 DER of the private ke
 #endif
 }
 
+#if ENABLE_LINK_TEST
+static size_t rsa_export_pk(uint8_t* out, size_t max) {  // the modulus N
+  if (max < 384 || !rsa_key_ready) return 0;
+  if (mbedtls_rsa_export_raw(mbedtls_pk_rsa(rsa_key), out, 384, NULL, 0, NULL, 0, NULL, 0, NULL, 0) != 0) return 0;
+  return 384;
+}
+#endif
+
 // Public key on the wire: the 384-byte modulus (e = 65537 is fixed and not sent)
 static const SigAlgorithm ALG_RSA3072 = {
   "RSA-3072", "mbedTLS 3.6 (hardware MPI + SHA)", "~128-bit classical", true, RSA_KEYGEN_RUNS,
-  KAT_FN(rsa_kat), rsa_keygen_once, rsa_make_key, rsa_free_key, rsa_sign, rsa_verify, 384, rsa_sk_bytes };
+  KAT_FN(rsa_kat), rsa_keygen_once, rsa_make_key, rsa_free_key, rsa_sign, rsa_verify, 384, rsa_sk_bytes,
+  PK_EXPORT(rsa_export_pk) };
 #endif
 
 // ========================================================================================
@@ -331,10 +362,16 @@ static uint8_t ml_pk[MAX_PK_BYTES], ml_sk[MAX_SK_BYTES];
     return DRONE_MLDSA##L##_verify(sig, siglen, m, len, NULL, 0, ml_pk);                         \
   }                                                                                              \
   static size_t ml##L##_sk_bytes() { return DRONE_MLDSA##L##_SK_BYTES; }                         \
+  [[maybe_unused]] static size_t ml##L##_export_pk(uint8_t* out, size_t max) {                   \
+    if (max < DRONE_MLDSA##L##_PK_BYTES) return 0;                                               \
+    memcpy(out, ml_pk, DRONE_MLDSA##L##_PK_BYTES);                                               \
+    return DRONE_MLDSA##L##_PK_BYTES;                                                            \
+  }                                                                                              \
   static const SigAlgorithm ALG_MLDSA##L = {                                                     \
     "ML-DSA-" #L, "mldsa-native v1.0.0-beta2 (portable C, software SHAKE)", CAT, false,          \
     BENCH_RUNS, KAT_FN(ml##L##_kat), ml##L##_keygen_once, ml##L##_make_key, ml##L##_free_key,            \
-    ml##L##_sign, ml##L##_verify, DRONE_MLDSA##L##_PK_BYTES, ml##L##_sk_bytes };
+    ml##L##_sign, ml##L##_verify, DRONE_MLDSA##L##_PK_BYTES, ml##L##_sk_bytes,                    \
+    PK_EXPORT(ml##L##_export_pk) };
 
 #if ENABLE_MLDSA44
 MLDSA_ADAPTER(44, "NIST category 2")
