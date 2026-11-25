@@ -25,7 +25,7 @@ The algorithms used:
   * `secure_tunnel.py`: encryption of messages.
   * `session_registry.py`: keeps one connection per device.
   * `console.py`: keeps the printouts of different ESP32s from mixing.
-  * `authorized_devices.json`: the list of ESP32s that are allowed in.
+  * `authorized_devices.json`: the registered ESP32s: each device name with its public key. The gateway uses this key to check the device's signature.
 * `sequence_diagram.png`: a picture of every step, from connecting to disconnecting.
 * `screenshots/`: photos of the VPN running on three ESP32s.
 * `benchmarking/`: speed tests.
@@ -48,7 +48,7 @@ The ESP32 connects to the gateway on TCP port 9000. Then four messages are excha
 **Message 1, Client Hello (82 bytes): ESP32 to gateway**
 * Contains: version, algorithm ID, device name (like `esp32-01`), a 32-byte random number, and a fresh X25519 public key.
 * The X25519 key is new for every connection. So even if a key leaks one day, old sessions stay safe (this is called *forward secrecy*).
-* The gateway checks the device name against `authorized_devices.json`. Unknown devices are dropped right away.
+* The gateway looks up the **registered public key** of that device name in `authorized_devices.json`. This is the first part of authentication: that key is what checks the ESP32's signature in message 3. A device with no registered key is dropped right away.
 
 **Message 2, Server Proof (128 bytes): gateway to ESP32**
 * The gateway makes its own random number and its own fresh X25519 key.
@@ -65,10 +65,14 @@ The ESP32 connects to the gateway on TCP port 9000. Then four messages are excha
 * The gateway sends `AUTH_OK` and its own HMAC tag. The ESP32 checks the tag.
 * Now both sides have proved who they are and share the same `K_session`. The key itself was never sent over Wi-Fi.
 
-**After the handshake: encrypted messages**
-* From `K_session`, each side makes two AES-256 keys: one for ESP32 → gateway and one for gateway → ESP32.
+**After the handshake: one Security Association (SA)**
+* Both sides take a SHA-256 hash of the **whole handshake** (messages 1 to 4, exactly as they were sent) together with **both public keys** (the ESP32's and the gateway's). We call this hash `TH`.
+* From `K_session` and `TH`, both sides make the **SA**: a 4-byte ID called the **SPI**, and two AES-256 keys, one for ESP32 → gateway and one for gateway → ESP32. Because `TH` is mixed in, these keys only exist for **this one handshake between these two devices**. This is called **SA binding**. IPsec, TLS 1.3 and WireGuard all tie their keys to the handshake in the same way.
+* The SPI is not sent. Instead, it is included in every message's tag, so a message is only accepted by the SA it was made for.
+
+**Encrypted messages**
 * Every message is encrypted with AES-256-GCM. The format is `[2 bytes length][8 bytes message number][encrypted data][16 bytes tag]`.
-* The tag proves the message was not changed on the way.
+* The tag proves the message was not changed on the way, and that it belongs to this SA.
 * The message number must go up by exactly 1 each time, so an old message that is sent again (a *replay*) is caught.
 * If any message is wrong (changed, replayed, too big, or not encrypted), only that ESP32's connection is closed. Other ESP32s are not affected.
 * Example: the ping `"[esp32-01] STATUS_PING #1"` (25 bytes) travels as a 52-byte encrypted message. The text never appears on the Wi-Fi.
@@ -76,14 +80,14 @@ The ESP32 connects to the gateway on TCP port 9000. Then four messages are excha
 
 **Changing the keys while connected (rekeying)**
 * After **1,000 messages or 5 minutes** with the same keys, the ESP32 asks for new keys. You can change this with `REKEY_AFTER_MESSAGES` and `REKEY_AFTER_MS` in `config.h`. For a demo, set it to 10 messages.
-* The ESP32 sends a fresh X25519 key inside the encrypted connection. The gateway answers with its own fresh X25519 key. Both make a new `K_session` from the new secret mixed with the old key. The old keys are deleted and the message number starts again from 0.
+* The ESP32 sends a fresh X25519 key inside the encrypted connection. The gateway answers with its own fresh X25519 key. Both make a new `K_session` from the new secret mixed with the old key, and install a **new SA** (new SPI and new keys, still tied to the same handshake). The old SA is deleted and the message number starts again from 0.
 * Because this happens inside the encrypted connection, nobody else can start a rekey. If a key ever leaks, it only exposes the messages from its own period.
 * The gateway disconnects a device that does not rekey (more than 2,000 messages or 10 minutes with one key), that asks for new keys within 5 seconds of the last time, or that sends a bad rekey message. Only that device is disconnected.
 
 **Many ESP32s at the same time**
 * Every ESP32 gets its own thread on the gateway, so one bad or rejected device never closes the others.
 * If the same device connects again, the old connection is closed and the new one is kept.
-* If you remove a device from `authorized_devices.json` while it is connected, it is disconnected within 5 seconds.
+* If you remove a device from `authorized_devices.json` while it is connected, its SA is deleted and it is disconnected within 5 seconds.
 * The gateway also limits how many connections it accepts at once, so it cannot easily be flooded.
 
 ---
@@ -109,7 +113,7 @@ It prints the laptop's IP address and waits for ESP32s on port 9000.
 3. Select your ESP32 board and port, then click **Upload**.
 4. Open the Serial Monitor at **115200 baud** to watch the handshake and the encrypted messages.
 
-### 3. Add a new ESP32 to the allowed list
+### 3. Register a new ESP32 (add its public key)
 The first time an ESP32 starts, it creates its own key and prints its **Device Public Key** on the Serial Monitor. Copy it into `laptop_server/authorized_devices.json` under its device name. The gateway picks up the change without a restart.
 
 ---

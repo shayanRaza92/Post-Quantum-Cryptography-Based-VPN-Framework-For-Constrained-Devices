@@ -14,7 +14,8 @@ from console import safe_print as print  # Thread-safe printing
 
 
 class DeviceAllowlist:
-    """Manages reading and verifying registered ESP32 devices from authorized_devices.json.
+    """Registered ESP32 devices (device ID -> public key) from authorized_devices.json. Looking a device up
+    here is the first part of authentication: its key is what checks the device's signature.
     The parsed file is cached and only re-read when its modification time changes."""
 
     def __init__(self, file_path=ALLOWLIST_FILE):

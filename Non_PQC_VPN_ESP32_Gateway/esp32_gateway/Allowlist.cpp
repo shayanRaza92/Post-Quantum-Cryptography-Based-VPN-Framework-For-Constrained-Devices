@@ -72,11 +72,11 @@ bool Allowlist::setRevoked(const char* deviceId, bool revoked) {
 
 void Allowlist::print() {
   xSemaphoreTake(_lock, portMAX_DELAY);
-  logLine("Allowlist (%u device(s)):", (unsigned)AUTHORIZED_DEVICE_COUNT);
+  logLine("Registered devices (%u):", (unsigned)AUTHORIZED_DEVICE_COUNT);
   for (size_t i = 0; i < AUTHORIZED_DEVICE_COUNT; i++) {
     const uint8_t* k = AUTHORIZED_DEVICES[i].publicKey;
     logLine("  - %-16s %s  key %02X%02X%02X%02X..%02X%02X", AUTHORIZED_DEVICES[i].deviceId,
-            _revoked[i] ? "REVOKED" : "ALLOWED", k[0], k[1], k[2], k[3], k[30], k[31]);
+            _revoked[i] ? "REVOKED" : "ACTIVE ", k[0], k[1], k[2], k[3], k[30], k[31]);
   }
   xSemaphoreGive(_lock);
 }

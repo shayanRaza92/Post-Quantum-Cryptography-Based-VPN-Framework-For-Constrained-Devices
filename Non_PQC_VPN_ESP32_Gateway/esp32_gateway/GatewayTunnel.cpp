@@ -8,6 +8,10 @@ static void writeU64BE(uint8_t* p, uint64_t v) {
   for (int i = 7; i >= 0; i--) { p[i] = (uint8_t)(v & 0xFF); v >>= 8; }
 }
 
+static void writeU32BE(uint8_t* p, uint32_t v) {
+  p[0] = (uint8_t)(v >> 24); p[1] = (uint8_t)(v >> 16); p[2] = (uint8_t)(v >> 8); p[3] = (uint8_t)v;
+}
+
 static uint64_t readU64BE(const uint8_t* p) {
   uint64_t v = 0;
   for (int i = 0; i < 8; i++) v = (v << 8) | p[i];
@@ -22,11 +26,14 @@ static void buildNonce(uint32_t dirId, uint64_t seq, uint8_t nonce12[12]) {
   writeU64BE(nonce12 + 4, seq);
 }
 
-// HKDF-Expand (RFC 5869) single block: T1 = HMAC-SHA256(PRK = K_session, info || 0x01)
-static void deriveKey(const uint8_t* kSession, const char* label, uint8_t out[32]) {
+// HKDF-Expand (RFC 5869) single block: T1 = HMAC-SHA256(PRK, label || epoch (4B BE) || 0x01)
+static void deriveKey(const uint8_t* prk, const char* label, uint32_t epoch, uint8_t out[32]) {
   crypto_auth_hmacsha256_state st;
-  crypto_auth_hmacsha256_init(&st, kSession, 32);
+  crypto_auth_hmacsha256_init(&st, prk, 32);
   crypto_auth_hmacsha256_update(&st, (const unsigned char*)label, strlen(label));
+  uint8_t epochBE[4];
+  writeU32BE(epochBE, epoch);
+  crypto_auth_hmacsha256_update(&st, epochBE, 4);
   const uint8_t one = 0x01;
   crypto_auth_hmacsha256_update(&st, &one, 1);
   crypto_auth_hmacsha256_final(&st, out);
@@ -39,8 +46,9 @@ static bool validBodyLen(size_t bodyLen) {
 }
 
 GatewayTunnel::GatewayTunnel()
-  : _active(false), _txSeq(0), _rxSeq(0), _epoch(0), _keyStartMs(0), _rxHave(0), _error("") {
+  : _active(false), _spi(0), _txSeq(0), _rxSeq(0), _epoch(0), _keyStartMs(0), _rxHave(0), _error("") {
   memset(_kSession, 0, sizeof(_kSession));
+  memset(_handshakeHash, 0, sizeof(_handshakeHash));
   memset(_kC2S, 0, sizeof(_kC2S));
   memset(_kS2C, 0, sizeof(_kS2C));
 }
@@ -49,19 +57,52 @@ GatewayTunnel::~GatewayTunnel() {
   end();
 }
 
-bool GatewayTunnel::installKeys(const uint8_t kSession[32]) {
+// AAD of every frame = SPI (4) || epoch (4B BE) || LEN || SEQ: a frame is only valid in its own SA
+void GatewayTunnel::buildAad(const uint8_t* header, uint8_t aad[AAD_SIZE]) const {
+  writeU32BE(aad, _spi);
+  writeU32BE(aad + 4, _epoch);
+  memcpy(aad + 8, header, HEADER_SIZE);
+}
+
+// Deletes the current SA (keys wiped, GCM contexts freed); the handshake hash is kept
+void GatewayTunnel::deleteSA() {
+  if (_active) {
+    mbedtls_gcm_free(&_txCtx);
+    mbedtls_gcm_free(&_rxCtx);
+  }
+  sodium_memzero(_kSession, sizeof(_kSession));
+  sodium_memzero(_kC2S, sizeof(_kC2S));
+  sodium_memzero(_kS2C, sizeof(_kS2C));
+  sodium_memzero(_rxBuf, sizeof(_rxBuf));
+  sodium_memzero(_plainBuf, sizeof(_plainBuf));
+  _spi = 0;
+  _txSeq = _rxSeq = 0;
+  _rxHave = 0;
+  _active = false;
+}
+
+// Installs the SA of `epoch`: SPI and both direction keys from HKDF(salt = TH, IKM = kSession)
+bool GatewayTunnel::installSA(const uint8_t kSession[32], uint32_t epoch) {
   uint8_t copy[32];
-  memcpy(copy, kSession, 32);   // kSession may point into _kSession, which end() wipes
-  end();
+  memcpy(copy, kSession, 32);   // kSession may point into _kSession, which deleteSA() wipes
+  deleteSA();
   memcpy(_kSession, copy, 32);
   sodium_memzero(copy, sizeof(copy));
 
-  deriveKey(_kSession, "VPN-v1|TUNNEL|C2S", _kC2S);
-  deriveKey(_kSession, "VPN-v1|TUNNEL|S2C", _kS2C);
+  uint8_t prk[32];              // HKDF-Extract: PRK = HMAC-SHA256(key = TH, K)
+  crypto_auth_hmacsha256(prk, _kSession, 32, _handshakeHash);
+  uint8_t spiBlock[32];
+  deriveKey(prk, "VPN-v1|SA|SPI", epoch, spiBlock);
+  deriveKey(prk, "VPN-v1|SA|C2S", epoch, _kC2S);
+  deriveKey(prk, "VPN-v1|SA|S2C", epoch, _kS2C);
+  sodium_memzero(prk, sizeof(prk));
+  _spi = ((uint32_t)spiBlock[0] << 24) | ((uint32_t)spiBlock[1] << 16) | ((uint32_t)spiBlock[2] << 8) | spiBlock[3];
+  sodium_memzero(spiBlock, sizeof(spiBlock));
+  _epoch = epoch;
 
   mbedtls_gcm_init(&_txCtx);
   mbedtls_gcm_init(&_rxCtx);
-  _active = true;  // Contexts exist from here on, so end() must free them
+  _active = true;  // Contexts exist from here on, so deleteSA() must free them
   if (mbedtls_gcm_setkey(&_txCtx, MBEDTLS_CIPHER_ID_AES, _kS2C, 256) != 0 ||   // we send S2C
       mbedtls_gcm_setkey(&_rxCtx, MBEDTLS_CIPHER_ID_AES, _kC2S, 256) != 0) {   // we receive C2S
     _error = "AES-256-GCM key setup failed";
@@ -75,10 +116,9 @@ bool GatewayTunnel::installKeys(const uint8_t kSession[32]) {
   return true;
 }
 
-bool GatewayTunnel::begin(const uint8_t kSession[32]) {
-  if (!installKeys(kSession)) return false;
-  _epoch = 0;
-  return true;
+bool GatewayTunnel::begin(const uint8_t kSession[32], const uint8_t handshakeHash[32]) {
+  memcpy(_handshakeHash, handshakeHash, 32);
+  return installSA(kSession, 0);
 }
 
 bool GatewayTunnel::rekey(const uint8_t sharedSecret[32], uint32_t newEpoch) {
@@ -104,25 +144,15 @@ bool GatewayTunnel::rekey(const uint8_t sharedSecret[32], uint32_t newEpoch) {
   sodium_memzero(prk, sizeof(prk));
   sodium_memzero(&st, sizeof(st));
 
-  bool ok = installKeys(kNew);   // Wipes the old keys, resets SEQ to 0 in both directions
+  bool ok = installSA(kNew, newEpoch);   // Deletes the old SA, resets SEQ to 0 in both directions
   sodium_memzero(kNew, sizeof(kNew));
-  if (ok) _epoch = newEpoch;
   return ok;
 }
 
 void GatewayTunnel::end() {
-  if (_active) {
-    mbedtls_gcm_free(&_txCtx);
-    mbedtls_gcm_free(&_rxCtx);
-  }
-  sodium_memzero(_kSession, sizeof(_kSession));
-  sodium_memzero(_kC2S, sizeof(_kC2S));
-  sodium_memzero(_kS2C, sizeof(_kS2C));
-  sodium_memzero(_rxBuf, sizeof(_rxBuf));
-  sodium_memzero(_plainBuf, sizeof(_plainBuf));
-  _txSeq = _rxSeq = 0;
-  _rxHave = 0;
-  _active = false;
+  deleteSA();
+  sodium_memzero(_handshakeHash, sizeof(_handshakeHash));
+  _epoch = 0;
 }
 
 size_t GatewayTunnel::seal(uint8_t type, const uint8_t* payload, size_t len, uint8_t* frameOut) {
@@ -142,8 +172,10 @@ size_t GatewayTunnel::seal(uint8_t type, const uint8_t* payload, size_t len, uin
   buildNonce(DIR_S2C, _txSeq, nonce);
   uint8_t* ct  = frameOut + HEADER_SIZE;
   uint8_t* tag = ct + ptLen;
+  uint8_t aad[AAD_SIZE];
+  buildAad(frameOut, aad);
   int rc = mbedtls_gcm_crypt_and_tag(&_txCtx, MBEDTLS_GCM_ENCRYPT, ptLen, nonce, sizeof(nonce),
-                                     frameOut, HEADER_SIZE,            // AAD = LEN || SEQ
+                                     aad, AAD_SIZE,                    // AAD = SPI || epoch || LEN || SEQ
                                      plain, ct, TAG_SIZE, tag);
   sodium_memzero(plain, ptLen);
   if (rc != 0) {
@@ -200,8 +232,10 @@ int GatewayTunnel::decryptFrame(uint8_t* typeOut, uint8_t* out, size_t* outLen, 
   }
   uint8_t nonce[12];
   buildNonce(DIR_C2S, seq, nonce);
+  uint8_t aad[AAD_SIZE];
+  buildAad(_rxBuf, aad);
   if (mbedtls_gcm_auth_decrypt(&_rxCtx, ctLen, nonce, sizeof(nonce),
-                               _rxBuf, HEADER_SIZE, tag, TAG_SIZE, ct, _plainBuf) != 0) {
+                               aad, AAD_SIZE, tag, TAG_SIZE, ct, _plainBuf) != 0) {
     sodium_memzero(_plainBuf, ctLen);
     _error = "AES-GCM authentication FAILED (tampered frame)";
     return -1;

@@ -59,7 +59,7 @@ const uint8_t GATEWAY_PRIVATE_SEED[32] = {
   0x33, 0x7d, 0x23, 0x99, 0xdb, 0x11, 0x86, 0xfb
 };
 
-// --- Allowlist (replaces laptop_server/authorized_devices.json) ---
+// --- Registered devices: ID + public key (replaces laptop_server/authorized_devices.json) ---
 // Each client prints its "Device Public Key" on the Serial Monitor at boot: copy it here.
 // Devices can also be revoked / re-allowed at runtime with Serial commands (see README);
 // that choice is saved in flash and survives a reboot.

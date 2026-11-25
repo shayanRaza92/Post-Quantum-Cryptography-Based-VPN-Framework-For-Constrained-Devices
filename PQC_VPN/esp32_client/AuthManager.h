@@ -28,6 +28,7 @@ private:
   uint8_t _sharedSecret[KEM_SHARED_SECRET_LENGTH]; // 32-byte ML-KEM shared secret
   uint8_t _kConfirm[32];      // Derived key confirmation key
   uint8_t _kSession[32];      // Derived master session key (for tunnel encryption)
+  uint8_t _handshakeHash[32]; // TH: hash of MSG1..MSG4 + both public keys (binds the SA)
 
   // Cached wire packets for running transcript hashing (stored in .bss via global AuthManager instance)
   uint8_t _cachedMsg1[MSG1_CLIENT_HELLO_SIZE]; // 850B MSG 1 wire packet
@@ -54,6 +55,9 @@ private:
   // Computes HMAC-SHA256 key confirmation tag over role label and transcript digest
   void computeConfirmationTag(const char* roleLabel, const uint8_t* transcriptDigest, uint8_t* outTag);
 
+  // SA binding: TH = SHA-256("VPN-v1|SA-BIND|" || MSG1 || MSG2 || MSG3 || MSG4 || PK_client || PK_gateway)
+  void computeHandshakeHash(const uint8_t* msg4);
+
   // --------------------------------------------------------------------------
   // PROTOCOL HANDSHAKE STAGES
   // --------------------------------------------------------------------------
@@ -70,6 +74,9 @@ public:
 
   // Getter for derived 32-byte session master key
   const uint8_t* getSessionKey() const { return _kSession; }
+
+  // Getter for the 32-byte handshake hash TH (the tunnel's SA is bound to it)
+  const uint8_t* getHandshakeHash() const { return _handshakeHash; }
 };
 
 #endif // AUTH_MANAGER_H

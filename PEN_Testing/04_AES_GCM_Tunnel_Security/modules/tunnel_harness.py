@@ -6,7 +6,8 @@ secure_tunnel.SecureTunnel and exercises it with a known K_session, so the resul
 real implementation's framing, nonce construction, replay check and rekeying. No network, no
 gateway, no ESP32 — nothing is sent anywhere.
 
-A matched pair of tunnels (client + server) sharing one K_session reproduces both directions:
+A matched pair of tunnels (client + server) sharing one K_session and handshake hash (one SA)
+reproduces both directions:
   * server.seal() -> client.feed()   (S2C)
   * client.seal() -> server.feed()   (C2S)
 
@@ -35,12 +36,14 @@ MSG_DATA = st.MSG_DATA
 MSG_REKEY_REQ = st.MSG_REKEY_REQ
 
 
-def make_tunnel_pair(k_session: bytes | None = None):
-    """Returns (server_tunnel, client_tunnel) sharing one K_session."""
+def make_tunnel_pair(k_session: bytes | None = None, handshake_hash: bytes | None = None):
+    """Returns (server_tunnel, client_tunnel) sharing one K_session and one handshake hash (one SA)."""
     if k_session is None:
         k_session = b"\x42" * 32  # fixed test key; offline only, never a real session key
-    server = st.SecureTunnel(k_session, role="server")
-    client = st.SecureTunnel(k_session, role="client")
+    if handshake_hash is None:
+        handshake_hash = b"\x24" * 32  # fixed test handshake hash (the SA is bound to it)
+    server = st.SecureTunnel(k_session, handshake_hash, role="server")
+    client = st.SecureTunnel(k_session, handshake_hash, role="client")
     return server, client
 
 

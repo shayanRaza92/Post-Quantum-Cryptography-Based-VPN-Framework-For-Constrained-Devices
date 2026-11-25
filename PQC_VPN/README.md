@@ -37,7 +37,7 @@ AES-256 is already considered safe against quantum computers, so the encryption 
   * `secure_tunnel.py`: encryption of messages, the same as on the ESP32.
   * `session_registry.py`: keeps one connection per device.
   * `console.py`: keeps the printouts of different ESP32s from mixing.
-  * `authorized_devices.json`: the allowed ESP32s and their 1,312-byte public keys.
+  * `authorized_devices.json`: the registered ESP32s: each device name with its 1,312-byte public key. The gateway uses this key to check the device's signature.
   * `build_native_libs.sh` and `host_shim/`: build the two C libraries for the laptop, **offline**, from `arduino_libraries/`.
   * `requirements.txt`: the Python package needed (`cryptography`).
 * `arduino_libraries/`: the two post-quantum libraries, used by both the ESP32 and the laptop.
@@ -56,7 +56,7 @@ The ESP32 connects to the gateway on TCP port 9000. Then four messages are excha
 **Message 1, Client Hello (850 bytes): ESP32 to gateway**
 * The ESP32 makes a **fresh ML-KEM-512 key pair**: a public part (800 bytes) and a private part (1,632 bytes). It is new for every connection, so old sessions stay safe even if a key leaks later.
 * It sends: version, algorithm ID, device name, a 32-byte random number, and the 800-byte public part.
-* The gateway checks the version and algorithm, and checks the device name against `authorized_devices.json`. Unknown devices are dropped right away.
+* The gateway checks the version and algorithm, and looks up the **registered public key** of that device name in `authorized_devices.json`. This is the first part of authentication: that key is what checks the ESP32's signature in message 3. A device with no registered key is dropped right away.
 
 **Message 2, Server Proof (3,220 bytes): gateway to ESP32**
 * The gateway uses the ESP32's ML-KEM public key to create a **shared secret `K`** and a 768-byte **ciphertext**. Only the ESP32, with its private key, can get `K` back out of the ciphertext. If the public key is malformed, the gateway stops.
@@ -72,15 +72,19 @@ The ESP32 connects to the gateway on TCP port 9000. Then four messages are excha
 **Message 4, Verdict (40 bytes): gateway to ESP32**
 * `AUTH_OK` plus the gateway's own HMAC tag, or `AUTH_NO` (8 bytes) if the ESP32's proof was wrong.
 
-**After the handshake: encrypted messages.** These work exactly as in the classical VPN:
-* From `K_session`, each side makes one AES-256 key for each direction.
-* Every message has the format `[2 bytes length][8 bytes number][encrypted data][16 bytes tag]`. The tag proves nothing was changed. The number must go up by exactly 1, so replays are caught.
+**After the handshake: one Security Association (SA)**
+* Both sides take a SHA-256 hash of the **whole handshake** (messages 1 to 4, exactly as they were sent) together with **both public keys** (the ESP32's and the gateway's). We call this hash `TH`.
+* From `K_session` and `TH`, both sides make the **SA**: a 4-byte ID called the **SPI**, and one AES-256 key for each direction. Because `TH` is mixed in, these keys only exist for **this one handshake between these two devices**. This is called **SA binding**. IPsec, TLS 1.3 and WireGuard all tie their keys to the handshake in the same way.
+* The SPI is not sent. Instead, it is included in every message's tag, so a message is only accepted by the SA it was made for.
+
+**Encrypted messages.** These work exactly as in the classical VPN:
+* Every message has the format `[2 bytes length][8 bytes number][encrypted data][16 bytes tag]`. The tag proves nothing was changed and that the message belongs to this SA. The number must go up by exactly 1, so replays are caught.
 * Inside, each message starts with one byte that says what it is: normal data, a rekey request, or a rekey answer. One message can carry up to 1,023 bytes.
 * A changed, replayed, out-of-order or too-big message closes only that ESP32's connection.
 
 **Changing the keys while connected (rekeying)**
 * After **1,000 messages or 5 minutes**, the ESP32 asks for new keys. For a demo, set `REKEY_AFTER_MESSAGES` in `config.h` to 10.
-* It sends a fresh ML-KEM-512 public key (an 831-byte encrypted message). The gateway answers with a ciphertext (799 bytes). Both get a new secret, mix it with the old key, and switch to new keys. The old keys are deleted and the numbering starts again from 0.
+* It sends a fresh ML-KEM-512 public key (an 831-byte encrypted message). The gateway answers with a ciphertext (799 bytes). Both get a new secret, mix it with the old key, and install a **new SA** (new SPI and new keys, still tied to the same handshake). The old SA is deleted and the numbering starts again from 0.
 * This happens inside the encrypted connection, so nobody else can start a rekey. If a key ever leaks, it only exposes the messages from its own period.
 * The gateway disconnects a device that does not rekey in time (more than 2,000 messages or 10 minutes with one key), asks for new keys within 5 seconds of the last time, or sends a bad rekey message. Only that device is disconnected.
 
@@ -100,12 +104,12 @@ Every ESP32 gets **its own thread** on the gateway, so a problem with one device
 
 | What happens | Result |
 |---|---|
-| The device is not in the allowed list | Only that connection is closed. The ESP32 tries again after 3 s, 6 s, 12 s, 24 s, then every 30 s |
+| The device has no registered key | Only that connection is closed. The ESP32 tries again after 3 s, 6 s, 12 s, 24 s, then every 30 s |
 | Wrong key or bad HMAC tag | That device gets `AUTH_NO`; the others keep working |
 | Garbage data, wrong version, or a broken ML-KEM key | That connection is closed |
 | The device stops answering during the handshake | It is dropped after 15 seconds |
 | The same device connects again | The new connection replaces the old one |
-| The device is removed from `authorized_devices.json` while connected | Only that device is disconnected (checked every 5 seconds) |
+| The device is removed from `authorized_devices.json` while connected | Its SA is deleted and only that device is disconnected (checked every 5 seconds) |
 | `authorized_devices.json` is saved half-way or has a typo | The last good list is kept; nobody is disconnected |
 | An encrypted message is changed, replayed or too big | Only that connection is closed |
 | The device does not change its keys in time, asks too often, or sends a bad rekey | Only that connection is closed |
@@ -143,7 +147,7 @@ You can also build from the command line without installing the libraries:
 arduino-cli compile --fqbn esp32:esp32:esp32 --libraries PQC_VPN/arduino_libraries PQC_VPN/esp32_client
 ```
 
-### 3. Add each ESP32 to the allowed list
+### 3. Register each ESP32 (add its public key)
 The first time an ESP32 starts, it creates its ML-DSA-44 key, saves it in flash, and prints its 1,312-byte **Device Public Key** on the Serial Monitor. Copy it into `laptop_server/authorized_devices.json` under the board's device name. The gateway picks up the change without a restart.
 
 > The `authorized_devices.json` in the repository contains the key of the board we tested with, under `esp32-01`. A different board using that name will be rejected until you put its own key there.
@@ -170,7 +174,7 @@ The first time an ESP32 starts, it creates its ML-DSA-44 key, saves it in flash,
   * Connections that just sit there do not block real devices.
   * Changed, replayed and too-big messages close only that connection.
   * A device connecting again replaces its old connection.
-  * A broken allowed list keeps everyone connected, and a removed device is disconnected while the others stay.
+  * A broken `authorized_devices.json` keeps everyone connected, and a removed device is disconnected while the others stay.
   * The gateway survives an error while starting a connection.
   * The printouts of different devices never mix.
 * **ESP32 code:** builds without any warnings, and uses 79% of the flash.

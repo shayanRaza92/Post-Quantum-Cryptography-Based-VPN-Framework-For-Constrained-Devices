@@ -16,7 +16,7 @@ const uint8_t PROTOCOL_VERSION    = 0x01; // Protocol Version 1
 const uint8_t ALGORITHM_ID        = 0x03; // Suite 3: ML-DSA-44-Auth (FIPS 204) + ML-KEM-512-KEX (FIPS 203) + HKDF-SHA256
 
 // --- Device Identity Name ---
-const char* const DEVICE_ID       = "esp32-01"; // Device ID name sent to check the allowlist
+const char* const DEVICE_ID       = "esp32-01"; // Device ID: the gateway uses it to find this device's registered public key
 
 // --- Protocol Packet Sizes and Tokens (4-Way Mutual Auth with ML-DSA-44 & Ephemeral ML-KEM-512 KEX) ---
 const size_t DEVICE_ID_LENGTH        = 16;   // Fixed 16-byte buffer for device ID packet

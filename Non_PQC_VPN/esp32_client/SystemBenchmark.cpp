@@ -162,7 +162,7 @@ static bool openVpnSession() {
   cancelRekey();
   if (!networkClient.connect(GATEWAY_IP, GATEWAY_PORT)) return false;
   networkClient.setNoDelay(true);
-  return auth.performMutualAuthentication() && tunnel.begin(auth.getSessionKey());
+  return auth.performMutualAuthentication() && tunnel.begin(auth.getSessionKey(), auth.getHandshakeHash());
 }
 
 // ============================================================================

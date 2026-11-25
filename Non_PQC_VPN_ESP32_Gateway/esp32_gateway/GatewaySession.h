@@ -16,7 +16,8 @@ class VpnGateway;
 //   MSG 2: Server Proof (128B)  -> [Nonce | X25519_pk | Ed25519_sig]
 //   MSG 3: Client Proof (96B)   <- [Ed25519_sig | Client_Confirm_Tag]
 //   MSG 4: Server Verdict (40B) -> ["AUTH_OK\n" | Server_Confirm_Tag]  or "AUTH_NO\n"
-// then the AES-256-GCM encrypted data tunnel (GatewayTunnel).
+// then the AES-256-GCM encrypted data tunnel (GatewayTunnel), run as one Security Association
+// (SA) bound to this handshake: its keys come from the hash of MSG 1-4 and both public keys.
 // Any failure ends ONLY this task and closes ONLY this client's socket.
 // ============================================================================
 class GatewaySession {
@@ -39,11 +40,14 @@ private:
   const char* volatile _terminateReason;
 
   char           _deviceId[DEVICE_ID_LENGTH + 1];
-  const uint8_t* _clientPublicKey;        // Registered key from the allowlist (points into flash)
+  const uint8_t* _clientPublicKey;        // The device's registered key (points into flash)
   unsigned long  _deadline;               // millis() deadline for the whole handshake
 
   uint8_t _msg1[MSG1_CLIENT_HELLO_SIZE];
   uint8_t _msg2[MSG2_SERVER_PROOF_SIZE];
+  uint8_t _msg3[MSG3_CLIENT_PROOF_SIZE];                  // MSG 3 and MSG 4 as sent, for the
+  uint8_t _msg4[MSG4_TOKEN_SIZE + KEY_CONFIRM_LENGTH];    // handshake hash (SA binding)
+  uint8_t _handshakeHash[32];             // TH: the tunnel's SA is bound to it
   uint8_t _clientTranscriptDigest[32];
   uint8_t _kConfirm[32];
   uint8_t _kSession[32];

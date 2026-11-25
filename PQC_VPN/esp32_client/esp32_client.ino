@@ -26,7 +26,7 @@ int           pingSequenceNumber    = 0; // Incremental counter for sent ping me
 bool          isVpnAuthenticated    = false; // Set to true only when mutual authentication succeeds
 
 // --- Reconnect Backoff ---
-// After a failure (gateway down, device not in allowlist, auth rejected) the wait before the
+// After a failure (gateway down, device not registered, auth rejected) the wait before the
 // next attempt doubles: 3s, 6s, 12s, 24s, 30s, 30s ... It resets to 3s after a successful handshake.
 // A rejected device therefore stops hammering the gateway that other ESP32s depend on.
 const unsigned long RECONNECT_DELAY_MIN_MS = 3000;
@@ -103,7 +103,7 @@ bool connectToGatewayServer() {
     networkClient.setNoDelay(true); // Disable TCP Nagle buffering for low-latency handshakes
     Serial.println("[TCP] Connected.");
 
-    if (auth.performMutualAuthentication() && tunnel.begin(auth.getSessionKey())) {
+    if (auth.performMutualAuthentication() && tunnel.begin(auth.getSessionKey(), auth.getHandshakeHash())) {
       isVpnAuthenticated = true;
       lastTunnelMessageTime = millis(); // First ping 1.5s after the tunnel opens
       Serial.println("[TUNNEL ACTIVE] AES-256-GCM encrypted channel ready.\n");

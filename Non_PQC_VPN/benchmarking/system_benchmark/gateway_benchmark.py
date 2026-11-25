@@ -177,14 +177,17 @@ class SimClient:
         k_confirm, k_session = G.derive_session_keys(finish(server_share), n_cli, n_srv)
         h_cli = G.build_client_transcript(m1, m2)
         tag = G.compute_confirmation_tag(k_confirm, config.CLIENT_CONFIRM_LABEL, h_cli)
-        self.sock.sendall(key.sign(h_cli) + tag)
+        m3 = key.sign(h_cli) + tag
+        self.sock.sendall(m3)
         verdict = recv_exact(self.sock, 8)
         if verdict != config.AUTH_OK_TOKEN:
             raise RuntimeError(f"rejected: {verdict!r}")
-        if recv_exact(self.sock, 32) != G.compute_confirmation_tag(k_confirm, config.SERVER_CONFIRM_LABEL, h_cli):
+        server_tag = recv_exact(self.sock, 32)
+        if server_tag != G.compute_confirmation_tag(k_confirm, config.SERVER_CONFIRM_LABEL, h_cli):
             raise RuntimeError("bad server confirmation tag")
+        th = secure_tunnel.handshake_hash(m1, m2, m3, verdict + server_tag, key.public, gateway_pk)
         self.handshake_ms = (time.perf_counter() - t0) * 1000
-        self.tunnel = secure_tunnel.SecureTunnel(k_session, role="client")
+        self.tunnel = secure_tunnel.SecureTunnel(k_session, th, role="client")
 
     def _wait_for(self, want):
         while True:
@@ -284,8 +287,8 @@ def l0_known_answer():
     exp = bytes.fromhex("522dc1f099567d07f47f37a32a84427d643a8cdcbfe5c0c97598a2bd2555d1aa"
                         "8cb08e48590dbb3da7b08b1056828838c5f61e6393ba7a0abcc9f662" "76fc6ece0f4e1768cddf8853bb2d551b")
     check("aes256_gcm", "NIST GCM test case 16", AESGCM(key).encrypt(iv, pt, aad) == exp)
-    a = secure_tunnel.SecureTunnel(os.urandom(32), "client")
-    b = secure_tunnel.SecureTunnel(a._k_session, "server")
+    a = secure_tunnel.SecureTunnel(os.urandom(32), os.urandom(32), "client")
+    b = secure_tunnel.SecureTunnel(a._k_session, a.handshake_hash, "server")
     ok = [p for *_, p in b.feed(a.seal(b"hello"))] == [b"hello"]
     frame = bytearray(a.seal(b"again"))
     frame[-1] ^= 1
@@ -387,8 +390,8 @@ def l1_gateway_crypto(runs):
 def l2_message_crypto(runs):
     section(f"[L2] GATEWAY PER-MESSAGE AES-256-GCM COST ({runs} timed runs per size after {WARMUP_RUNS} warm-up runs)")
     for size in (64, 256, 1023):
-        a = secure_tunnel.SecureTunnel(os.urandom(32), "client")
-        b = secure_tunnel.SecureTunnel(a._k_session, "server")
+        a = secure_tunnel.SecureTunnel(os.urandom(32), os.urandom(32), "client")
+        b = secure_tunnel.SecureTunnel(a._k_session, a.handshake_hash, "server")
         payload = os.urandom(size)
         for _ in range(WARMUP_RUNS):
             list(b.feed(a.seal(payload)))

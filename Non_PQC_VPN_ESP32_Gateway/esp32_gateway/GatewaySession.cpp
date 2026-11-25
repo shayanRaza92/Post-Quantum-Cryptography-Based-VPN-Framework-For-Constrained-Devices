@@ -136,10 +136,24 @@ bool GatewaySession::performHandshake() {
   bool accepted = verifyClientProof();
   sendVerdict(accepted);
   sodium_memzero(_kConfirm, sizeof(_kConfirm));             // Only needed during the handshake
+  if (accepted) {
+    // SA binding: TH = SHA-256("VPN-v1|SA-BIND|" || MSG1 || MSG2 || MSG3 || MSG4 || PK_client || PK_gateway)
+    crypto_hash_sha256_state st;
+    crypto_hash_sha256_init(&st);
+    crypto_hash_sha256_update(&st, (const unsigned char*)"VPN-v1|SA-BIND|", 15);
+    crypto_hash_sha256_update(&st, _msg1, sizeof(_msg1));
+    crypto_hash_sha256_update(&st, _msg2, sizeof(_msg2));
+    crypto_hash_sha256_update(&st, _msg3, sizeof(_msg3));
+    crypto_hash_sha256_update(&st, _msg4, sizeof(_msg4));
+    crypto_hash_sha256_update(&st, _clientPublicKey, 32);
+    crypto_hash_sha256_update(&st, _gateway.crypto().publicKey(), 32);
+    crypto_hash_sha256_final(&st, _handshakeHash);
+    _log.addHex("[SA] Handshake hash TH (the tunnel's SA is bound to it)", _handshakeHash, 32);
+  }
   return accepted;
 }
 
-// MESSAGE 1: CLIENT HELLO (82 bytes) + allowlist authorization
+// MESSAGE 1: CLIENT HELLO (82 bytes) + authentication part 1: find the device's registered key
 bool GatewaySession::receiveClientHello() {
   if (!recvExact(_msg1, MSG1_CLIENT_HELLO_SIZE)) {
     _log.add("[ERROR] Disconnected or timed out during MSG 1 (Client Hello).");
@@ -179,10 +193,10 @@ bool GatewaySession::receiveClientHello() {
 
   _clientPublicKey = _gateway.allowlist().lookup(_deviceId);
   if (_clientPublicKey == nullptr) {
-    _log.add("[AUTHORIZATION] '%s' DENIED (not in allowlist or revoked). Closing connection.", _deviceId);
+    _log.add("[AUTH-FAIL] '%s' is not a registered device (or was revoked). Closing connection.", _deviceId);
     return false;
   }
-  _log.add("[AUTHORIZATION] '%s' ALLOWED.", _deviceId);
+  _log.add("[AUTHENTICATION] Registered public key of '%s' found; it will check the signature in MSG 3.", _deviceId);
   _log.addHex("    Registered Client Identity Public Key [PK_cli]", _clientPublicKey, 32);
   return true;
 }
@@ -243,6 +257,7 @@ bool GatewaySession::verifyClientProof() {
     _log.add("[AUTH-FAIL] Disconnected or timed out waiting for MSG 3 (Client Proof).");
     return false;
   }
+  memcpy(_msg3, packet, sizeof(packet));   // Kept for the handshake hash (SA binding)
   const uint8_t* clientSig        = packet;
   const uint8_t* clientConfirmTag = packet + SIGNATURE_LENGTH;
 
@@ -284,6 +299,7 @@ void GatewaySession::sendVerdict(bool accepted) {
   _log.add("[Gateway -> Client] MSG 4: Server Verdict (40 Bytes)");
   _log.add("    Verdict Token : \"AUTH_OK\\n\"");
   _log.addHex("    Server Key Confirmation Tag", packet + MSG4_TOKEN_SIZE, KEY_CONFIRM_LENGTH);
+  memcpy(_msg4, packet, sizeof(packet));   // Kept for the handshake hash (SA binding)
   if (sendAll(packet, sizeof(packet))) {
     _log.add("[MUTUAL AUTHENTICATION & KEY EXCHANGE SUCCESS]");
   } else {
@@ -302,20 +318,22 @@ static void hexPreview(const uint8_t* data, size_t len, char* out, size_t outSiz
 }
 
 void GatewaySession::runTunnel() {
-  if (!_tunnel.begin(_kSession)) {
+  if (!_tunnel.begin(_kSession, _handshakeHash)) {
     logLine("[%s] [TUNNEL-ERROR] %s. Closing session.", _deviceId, _tunnel.lastError());
     return;
   }
-  sodium_memzero(_kSession, sizeof(_kSession));   // Only the derived tunnel keys are needed now
+  sodium_memzero(_kSession, sizeof(_kSession));   // The tunnel keeps its own copy
+  sodium_memzero(_handshakeHash, sizeof(_handshakeHash));
 
   char c2s[65], s2c[65];
   for (int i = 0; i < 32; i++) {
     snprintf(c2s + 2 * i, 3, "%02X", _tunnel.keyC2S()[i]);
     snprintf(s2c + 2 * i, 3, "%02X", _tunnel.keyS2C()[i]);
   }
-  logLine("[%s] [TUNNEL ACTIVE] AES-256-GCM encrypted stream (PFS established).\n"
-          "    K_c2s (client->gateway) = %s\n    K_s2c (gateway->client) = %s",
-          _deviceId, c2s, s2c);
+  logLine("[%s] [SA INSTALLED] SPI 0x%08lX, epoch 0, bound to this handshake (TH). AES-256-GCM tunnel active.\n"
+          "    K_c2s (client->gateway) = %s\n    K_s2c (gateway->client) = %s\n"
+          "    Every frame's tag also covers the SPI and epoch: a frame is only valid in this SA.",
+          _deviceId, (unsigned long)_tunnel.spi(), c2s, s2c);
 
   setRecvTimeout(TUNNEL_POLL_MS);   // Short timeout so revocation / idle checks run while quiet
   uint8_t chunk[512];
@@ -327,7 +345,8 @@ void GatewaySession::runTunnel() {
       return;
     }
     if (!_gateway.allowlist().isStillAuthorized(_deviceId, _clientPublicKey)) {
-      logLine("[%s] [REVOKED] Device no longer authorized. Closing tunnel.", _deviceId);
+      logLine("[%s] [REVOKED] Registered key revoked or changed. Deleting SA 0x%08lX and closing tunnel.", _deviceId,
+              (unsigned long)_tunnel.spi());
       return;
     }
     if (_tunnel.keyAgeMs() > REKEY_MAX_MS) {
@@ -392,11 +411,11 @@ void GatewaySession::runTunnel() {
 bool GatewaySession::handleMessage(const uint8_t* msg, size_t len, uint64_t seq) {
   char ctPreview[32];
   hexPreview(_tunnel.lastFrameCiphertext(), len, ctPreview, sizeof(ctPreview));
-  logLine("[%s] <- RECEIVED encrypted msg #%llu (%u bytes over Wi-Fi, key epoch %lu)\n"
+  logLine("[%s] <- RECEIVED encrypted msg #%llu (%u bytes over Wi-Fi, SA 0x%08lX)\n"
           "     ciphertext : %s...  (unreadable without the key)\n"
           "     decrypted  : \"%.*s\"  (GCM tag VALID)",
           _deviceId, (unsigned long long)seq, (unsigned)(GatewayTunnel::HEADER_SIZE + 1 + len + GatewayTunnel::TAG_SIZE),
-          (unsigned long)_tunnel.epoch(), ctPreview, (int)(len < 120 ? len : 120), (const char*)msg);
+          (unsigned long)_tunnel.spi(), ctPreview, (int)(len < 120 ? len : 120), (const char*)msg);
 
   // Reply = "SERVER_ACK_FOR_<id>: <message>", cut to one frame
   int prefix = snprintf((char*)_reply, sizeof(_reply), "SERVER_ACK_FOR_%s: ", _deviceId);
@@ -452,6 +471,7 @@ bool GatewaySession::handleRekey(const uint8_t* payload, size_t len) {
   }
 
   const uint64_t oldCount = _tunnel.framesReceived();
+  const uint32_t oldSpi = _tunnel.spi();
   size_t frameLen = _tunnel.seal(GatewayTunnel::MSG_REKEY_RESP, resp, sizeof(resp), _frame);  // OLD keys
   ok = frameLen > 0 && sendAll(_frame, frameLen) && _tunnel.rekey(ss, epoch);
   sodium_memzero(ss, sizeof(ss));
@@ -460,8 +480,10 @@ bool GatewaySession::handleRekey(const uint8_t* payload, size_t len) {
     return false;
   }
   logLine("[%s] [REKEY] Epoch %lu: fresh X25519 exchange inside the tunnel after %llu messages.\n"
-          "     new K_c2s : %02X%02X%02X%02X%02X%02X%02X%02X...   old keys wiped, msg # restarts at 0",
-          _deviceId, (unsigned long)epoch, (unsigned long long)oldCount,
+          "     new SA 0x%08lX installed (still bound to the handshake), old SA 0x%08lX deleted\n"
+          "     new K_c2s : %02X%02X%02X%02X%02X%02X%02X%02X...   msg # restarts at 0",
+          _deviceId, (unsigned long)epoch, (unsigned long long)oldCount, (unsigned long)_tunnel.spi(),
+          (unsigned long)oldSpi,
           _tunnel.keyC2S()[0], _tunnel.keyC2S()[1], _tunnel.keyC2S()[2], _tunnel.keyC2S()[3],
           _tunnel.keyC2S()[4], _tunnel.keyC2S()[5], _tunnel.keyC2S()[6], _tunnel.keyC2S()[7]);
   return true;

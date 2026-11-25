@@ -5,8 +5,8 @@ import re
 import hmac
 import hashlib
 import struct
-from secure_tunnel import (  # AES-256-GCM data tunnel with in-tunnel rekeying
-    SecureTunnel, TunnelError, MAX_PAYLOAD, MSG_DATA, MSG_REKEY_REQ, MSG_REKEY_RESP, MSG_NAMES
+from secure_tunnel import (  # AES-256-GCM data tunnel (SA bound to the handshake) with in-tunnel rekeying
+    SecureTunnel, TunnelError, MAX_PAYLOAD, MSG_DATA, MSG_REKEY_REQ, MSG_REKEY_RESP, MSG_NAMES, handshake_hash
 )
 from config import (
     PROTOCOL_VERSION,
@@ -169,7 +169,10 @@ class VpnSession:
         self.k_session = None
         self.registry = registry            # Shared SessionRegistry (one live tunnel per device)
         self.device_id = None               # Known once MSG 1 has been parsed
-        self.registered_pubkey = None       # Allowlist key used to authenticate this session
+        self.registered_pubkey = None       # Registered key used to authenticate this session
+        self.handshake_hash = None          # TH: the tunnel's SA is bound to it (set after MSG 4)
+        self._msg3 = None                   # MSG 3 and MSG 4 exactly as sent (for TH)
+        self._msg4 = None
         self._terminate_reason = None       # Set when another thread closes this session
 
     def terminate(self, reason):
@@ -248,14 +251,14 @@ class VpnSession:
         print_mlkem_ek_box(client_kem_ek)
         print("+-----------------------------------------------------------------------------+")
 
-        # Step 4: Server allowlist authorization check
+        # Step 4: Authentication part 1 - look up the device's registered public key
         print_note("The ESP32 sent its name, a fresh random number, and a ONE-TIME ML-KEM-512 public key (800 bytes). Anyone may see this public key - it can only be used to LOCK a secret that only this ESP32 can unlock.")
-        print(f"\n[Server] [AUTHORIZATION] Checking Device ID '{device_id}' against local allowlist database...")
+        print(f"\n[Server] [AUTHENTICATION] Looking up the registered public key of '{device_id}'...")
         registered_pubkey_bytes = self.allowlist.get_device_public_key(device_id)
         if not registered_pubkey_bytes:
-            print(f"[Server] [AUTHORIZATION] Status: DENIED (Device ID not registered)")
+            print(f"[Server] [AUTH-FAIL] '{device_id}' is not a registered device (no public key to check it with).")
             return None, None, None, None, None
-        print(f"[Server] [AUTHORIZATION] Status: ALLOWED (Authorized client public key loaded from database)")
+        print(f"[Server] [AUTHENTICATION] Registered key found. It will check this device's signature in MSG 3.")
         print("+-----------------------------------------------------------------------------+")
         print("| Registered Client ML-DSA-44 Public Key [PK_cli] (1312 Bytes / 10496-bits)   |")
         print_mldsa_pubkey_box(registered_pubkey_bytes)
@@ -418,6 +421,7 @@ class VpnSession:
             print(f"[{device_id}] [AUTH-FAIL] Connection dropped waiting for Client Proof.")
             return False, None
 
+        self._msg3 = raw                    # Kept for the handshake hash (SA binding)
         client_sig = raw[:SIGNATURE_LENGTH]
         client_confirm_tag = raw[SIGNATURE_LENGTH:MSG3_CLIENT_PROOF_SIZE]
 
@@ -559,6 +563,7 @@ class VpnSession:
             packet = AUTH_FAIL_TOKEN
             status_str = "[AUTHENTICATION REJECTED]                    "
 
+        self._msg4 = packet                 # Kept for the handshake hash (SA binding)
         try:
             self.connection.sendall(packet)
         except OSError:
@@ -620,8 +625,12 @@ class VpnSession:
 
         # Message 4: Server Verdict & Key Confirmation (40 B)
         self._send_auth_verdict(device_id, accepted, client_transcript_digest)
+        if not accepted:
+            return False, None
 
-        return (True, device_id) if accepted else (False, None)
+        # SA binding: the tunnel's keys will be derived from this exact handshake and both identities
+        self.handshake_hash = handshake_hash(msg1, msg2, self._msg3, self._msg4, reg_key, self.crypto.public_bytes)
+        return True, device_id
 
     # -------------------------------------------------------------------------
     # ACTIVE DATA TUNNEL
@@ -632,11 +641,11 @@ class VpnSession:
             print_summary()
             print(f"[{device_id}] [TUNNEL ACTIVE] AES-256-GCM Encrypted Stream (PQC Mutual Auth + PFS Established)")
             print(f"[{device_id}] [SESSION MASTER KEY]: {self.k_session.hex().upper()[:32]}...")
-            tunnel = SecureTunnel(self.k_session, role="server")
-            tunnel.print_keys()
-            print_note("Every message is now encrypted with AES-256-GCM. 'ciphertext' is what actually travels over Wi-Fi and is unreadable without the key. 'tag VALID' means the message was not changed on the way. 'msg #' must go up by exactly one, so old messages cannot be replayed.")
+            tunnel = SecureTunnel(self.k_session, self.handshake_hash, role="server")
+            tunnel.print_keys(peer=device_id)
+            print_note("The tunnel is now one Security Association (SA) with its own ID (SPI). Its keys are made from THIS handshake and the two identities, so they cannot belong to any other session. Every message is encrypted with AES-256-GCM. 'tag VALID' means the message was not changed and belongs to this SA. 'msg #' must go up by exactly one, so old messages cannot be replayed.")
 
-        # Short poll timeout so idle-timeout and allowlist re-checks run even when the device is quiet
+        # Short poll timeout so idle-timeout and registration re-checks run even when the device is quiet
         self.connection.settimeout(TUNNEL_POLL_INTERVAL)
         last_rx = time.monotonic()
         last_allowlist_check = time.monotonic()
@@ -644,11 +653,12 @@ class VpnSession:
         while True:
             now = time.monotonic()
 
-            # Revocation: device removed from (or re-keyed in) authorized_devices.json -> close
+            # Revocation: the SA is bound to the registered key it was authenticated with; if the device is
+            # removed from (or re-keyed in) authorized_devices.json, that SA is no longer valid -> close
             if now - last_allowlist_check >= ALLOWLIST_RECHECK_INTERVAL:
                 last_allowlist_check = now
                 if self.allowlist.get_device_public_key(device_id) != self.registered_pubkey:
-                    print(f"[{device_id}] [REVOKED] Device no longer authorized in allowlist. Closing tunnel.")
+                    print(f"[{device_id}] [REVOKED] Registered key removed or changed. Deleting SA 0x{tunnel.spi:08X} and closing tunnel.")
                     break
 
             if tunnel.key_age > REKEY_MAX_SECONDS:
@@ -700,9 +710,9 @@ class VpnSession:
         self.connection.sendall(frame)
         tx_seq, nonce, tx_ct, _ = tunnel.last_tx
         print("\n".join([  # One print call = one uninterrupted block per message
-            f"[{device_id}] <- RECEIVED encrypted msg #{seq} ({10 + len(ct) + 16} bytes over Wi-Fi, key epoch {tunnel.epoch})",
+            f"[{device_id}] <- RECEIVED encrypted msg #{seq} ({10 + len(ct) + 16} bytes over Wi-Fi, SA 0x{tunnel.spi:08X})",
             f"     ciphertext : {ct[:12].hex().upper()}...  (unreadable without the key)",
-            f"     auth tag   : {tag.hex().upper()}  -> VALID (not tampered)",
+            f"     auth tag   : {tag.hex().upper()}  -> VALID (not tampered, this SA)",
             f"     decrypted  : \"{text}\"",
             f"[{device_id}] -> SENT encrypted reply msg #{tx_seq} ({len(frame)} bytes over Wi-Fi)",
             f"     message    : \"{reply.decode('utf-8', errors='replace')}\"",
@@ -723,13 +733,14 @@ class VpnSession:
 
     def _finish_rekey(self, tunnel, device_id, epoch, server_share, shared_secret, kex_name):
         """Sends REKEY_RESP with the OLD keys, then switches both directions to the new keys."""
-        old_rx = tunnel.rx_seq
+        old_rx, old_spi = tunnel.rx_seq, tunnel.spi
         self.connection.sendall(tunnel.seal(struct.pack(">I", epoch) + server_share, MSG_REKEY_RESP))
         tunnel.rekey(shared_secret, epoch)
         print("\n".join([
             f"[{device_id}] [REKEY] Epoch {epoch}: fresh {kex_name} exchange inside the tunnel after {old_rx} messages.",
+            f"     new SA 0x{tunnel.spi:08X} installed (still bound to the handshake), old SA 0x{old_spi:08X} deleted",
             f"     new K_c2s : {tunnel.k_c2s.hex().upper()[:16]}...   new K_s2c : {tunnel.k_s2c.hex().upper()[:16]}...",
-            "     old keys discarded, msg # restarts at 0 in both directions",
+            "     msg # restarts at 0 in both directions",
             "",
         ]))
 

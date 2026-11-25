@@ -108,7 +108,7 @@ class VpnGateway:
         print("=" * 64)
 
         devices = self.allowlist.load_authorized_devices()  # Read registered devices from JSON
-        print(f"Loaded {len(devices)} authorized device(s) from allowlist:")
+        print(f"Loaded {len(devices)} registered device(s) (device ID + public key) from authorized_devices.json:")
         for dev_id, pub_bytes in devices.items():
             print(f"  - {dev_id}: {pub_bytes.hex()}")
         print()

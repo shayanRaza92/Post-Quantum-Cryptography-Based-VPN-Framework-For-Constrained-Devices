@@ -173,7 +173,7 @@ void VpnGateway::handleCommand(String line) {
   if (cmd == "help") {
     logLine("Commands:");
     logLine("  status         - free memory, Wi-Fi clients, active tunnels");
-    logLine("  list           - allowlist with ALLOWED / REVOKED state");
+    logLine("  list           - registered devices with ACTIVE / REVOKED state");
     logLine("  sessions       - devices with an active tunnel");
     logLine("  revoke <id>    - block a device now and disconnect it (saved in flash)");
     logLine("  allow <id>     - allow a revoked device again (saved in flash)");
@@ -189,16 +189,16 @@ void VpnGateway::handleCommand(String line) {
     _registry.printActive();
   } else if (cmd == "revoke" && arg.length() > 0) {
     if (_allowlist.setRevoked(arg.c_str(), true)) {
-      logLine("[ALLOWLIST] %s REVOKED.", arg.c_str());
+      logLine("[REGISTERED DEVICES] %s REVOKED (its key can no longer authenticate).", arg.c_str());
       _registry.terminate(arg.c_str(), "revoked by operator");
     } else {
-      logLine("[ALLOWLIST] Unknown device ID '%s'. Type 'list'.", arg.c_str());
+      logLine("[REGISTERED DEVICES] Unknown device ID '%s'. Type 'list'.", arg.c_str());
     }
   } else if (cmd == "allow" && arg.length() > 0) {
     if (_allowlist.setRevoked(arg.c_str(), false)) {
-      logLine("[ALLOWLIST] %s ALLOWED.", arg.c_str());
+      logLine("[REGISTERED DEVICES] %s ACTIVE again (its key can authenticate).", arg.c_str());
     } else {
-      logLine("[ALLOWLIST] Unknown device ID '%s'. Type 'list'.", arg.c_str());
+      logLine("[REGISTERED DEVICES] Unknown device ID '%s'. Type 'list'.", arg.c_str());
     }
   } else if (cmd == "kick" && arg.length() > 0) {
     if (!_registry.terminate(arg.c_str(), "kicked by operator")) {

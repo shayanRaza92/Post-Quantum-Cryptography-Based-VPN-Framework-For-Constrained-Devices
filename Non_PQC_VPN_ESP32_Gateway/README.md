@@ -19,12 +19,12 @@ This is the same VPN as [`Non_PQC_VPN/`](../Non_PQC_VPN/README.md), but here **o
 | File | What it does |
 |---|---|
 | `esp32_gateway/` | The code for the gateway ESP32 (it does what `Non_PQC_VPN/laptop_server/` does on the laptop) |
-| `esp32_gateway/gateway_config.h` | Wi-Fi name and password, the list of allowed devices, the gateway key, limits |
+| `esp32_gateway/gateway_config.h` | Wi-Fi name and password, the registered devices (name + public key), the gateway key, limits |
 | `esp32_gateway/VpnGateway.*` | Accepts connections, limits how many at once, reads commands typed in the Serial Monitor |
 | `esp32_gateway/GatewaySession.*` | Handles one client: the handshake and its encrypted messages. Each client runs in its own task |
-| `esp32_gateway/GatewayTunnel.*` | Encrypts and decrypts messages (AES-256-GCM) |
+| `esp32_gateway/GatewayTunnel.*` | The Security Association (SA) of one client: encrypts and decrypts its messages (AES-256-GCM) |
 | `esp32_gateway/GatewayCrypto.*` | The handshake crypto (Ed25519, X25519, HKDF, HMAC) |
-| `esp32_gateway/Allowlist.*` | The allowed devices, and blocking/unblocking them while running |
+| `esp32_gateway/Allowlist.*` | The registered devices and their public keys, and blocking (revoking) them while running |
 | `esp32_gateway/SessionRegistry.*` | Keeps one connection per device |
 | `esp32_gateway/Log.*` | Keeps the printouts of different clients from mixing |
 | `esp32_client/` | The client code, a copy of `Non_PQC_VPN/esp32_client/` set up for this gateway |
@@ -54,7 +54,7 @@ This is the same VPN as [`Non_PQC_VPN/`](../Non_PQC_VPN/README.md), but here **o
 2. In `config.h`, give **each board its own `DEVICE_ID`** (`esp32-01`, `esp32-02`, `esp32-03`). Leave the Wi-Fi settings and `GATEWAY_IP` (`192.168.4.1`) as they are, unless you changed them on the gateway.
 3. Upload. When a client starts for the first time, it prints its **Device Public Key**.
 
-### 3. Add a new client to the allowed list
+### 3. Register a new client
 Each board creates its own key the first time it starts and keeps it in flash. Boards that already worked with the laptop gateway keep their keys, and those keys are already in `gateway_config.h`. For a new board:
 1. Copy the `Device Public Key` from the client's Serial Monitor.
 2. Add `{ "esp32-04", { 0x.., ... } }` to `AUTHORIZED_DEVICES` in `gateway_config.h`.
@@ -70,9 +70,9 @@ Type these in the gateway's Serial Monitor:
 |---|---|
 | `help` | Shows the list of commands |
 | `status` | Free memory, number of connected Wi-Fi clients, open connections |
-| `list` | The allowed devices, and whether each one is blocked |
+| `list` | The registered devices, and whether each one is ACTIVE or REVOKED |
 | `sessions` | Which devices are connected right now |
-| `revoke esp32-02` | Blocks the device **and disconnects it immediately**. Stays blocked after a restart |
+| `revoke esp32-02` | Blocks the device, **deletes its SA and disconnects it immediately**. Stays blocked after a restart |
 | `allow esp32-02` | Unblocks a blocked device |
 | `kick esp32-02` | Disconnects the device once (it will connect again by itself) |
 
@@ -84,7 +84,7 @@ Each client runs in its **own task** on the gateway, so a problem with one clien
 
 | What happens | Result |
 |---|---|
-| The device is not in the allowed list, or is blocked | Only that connection is closed. The client notices right away and tries again after 3 s, 6 s, 12 s, 24 s, then every 30 s |
+| The device has no registered key, or is revoked | Only that connection is closed. The client notices right away and tries again after 3 s, 6 s, 12 s, 24 s, then every 30 s |
 | Wrong key, bad signature or bad HMAC tag | That client gets `AUTH_NO`; the others keep working |
 | Garbage data or the wrong protocol version | That connection is closed |
 | The client stops answering during the handshake | It is dropped after 10 seconds |
@@ -101,5 +101,6 @@ Each client runs in its **own task** on the gateway, so a problem with one clien
 
 ## Security notes
 * `GATEWAY_PRIVATE_SEED` (the gateway's secret key) is written in the code, so that the clients can keep trusting the same key as with the laptop gateway. **Anyone who reads it can pretend to be the gateway.** For real use, make a new secret, keep it out of the repository, and update `TRUSTED_GATEWAY_PUBLIC_KEY` in the clients.
-* All messages are **encrypted with AES-256-GCM**, the same way as in `Non_PQC_VPN/` and `PQC_VPN/`. There is one key for each direction, every message has a number that must go up by one, and the 16-byte tag is checked before anything is used. Both ESP32s use their built-in AES hardware.
-* **The keys are changed while connected**, the same way as in [`Non_PQC_VPN/`](../Non_PQC_VPN/README.md): every 1,000 messages or 5 minutes, the client does a fresh X25519 exchange inside the encrypted connection, both sides switch to the new keys, and the old keys are deleted. The gateway's limits are `REKEY_MAX_MESSAGES`, `REKEY_MAX_MS` and `REKEY_MIN_INTERVAL_MS` in `gateway_config.h`.
+* After the handshake, each client gets one **Security Association (SA)**, made the same way as in `Non_PQC_VPN/` and `PQC_VPN/`. Its keys come from `K_session` **and a hash of the whole handshake plus both public keys**, so they only exist for that one handshake between those two devices (**SA binding**). The SA's ID (SPI) is checked inside every message's tag.
+* All messages are **encrypted with AES-256-GCM**. There is one key for each direction, every message has a number that must go up by one, and the 16-byte tag is checked before anything is used. Both ESP32s use their built-in AES hardware.
+* **The keys are changed while connected**, the same way as in [`Non_PQC_VPN/`](../Non_PQC_VPN/README.md): every 1,000 messages or 5 minutes, the client does a fresh X25519 exchange inside the encrypted connection, both sides install a new SA (new SPI and keys, still tied to the same handshake), and the old SA is deleted. The gateway's limits are `REKEY_MAX_MESSAGES`, `REKEY_MAX_MS` and `REKEY_MIN_INTERVAL_MS` in `gateway_config.h`.

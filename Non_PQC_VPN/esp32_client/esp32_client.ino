@@ -2,7 +2,7 @@
 #include <sodium.h>        // Libsodium cryptography library for Ed25519
 #include "config.h"        // Wi-Fi credentials, server IP, port, and pinned server key
 #include "DeviceIdentity.h"// Device identity class (NVS flash storage and key generation)
-#include "AuthManager.h"   // Handshake manager class (allowlist check and mutual authentication)
+#include "AuthManager.h"   // Handshake manager class (mutual authentication and key exchange)
 #include "SecureTunnel.h" // AES-256-GCM encrypted data tunnel keyed from K_session
 #include "VpnLog.h"        // Print object that the benchmark can silence
 #include "SystemBenchmark.h" // End-to-end benchmark (BENCHMARK_MODE in config.h)
@@ -19,7 +19,7 @@ int           pingSequenceNumber    = 0; // Incremental counter for sent ping me
 bool          isVpnAuthenticated    = false; // Set to true only when mutual authentication succeeds
 
 // --- Reconnect Backoff ---
-// After a failure (gateway down, device not in allowlist, auth rejected) the wait before the
+// After a failure (gateway down, device not registered, auth rejected) the wait before the
 // next attempt doubles: 3s, 6s, 12s, 24s, 30s, 30s ... It resets to 3s after a successful handshake.
 // A rejected device therefore stops hammering the gateway that other ESP32s depend on.
 const unsigned long RECONNECT_DELAY_MIN_MS = 3000;
@@ -95,7 +95,7 @@ bool connectToGatewayServer() {
     Serial.println("[TCP] Connected.");
 
     // Run the handshake, then key the AES-256-GCM tunnel from the derived K_session
-    if (auth.performMutualAuthentication() && tunnel.begin(auth.getSessionKey())) {
+    if (auth.performMutualAuthentication() && tunnel.begin(auth.getSessionKey(), auth.getHandshakeHash())) {
       isVpnAuthenticated = true;              // Mark session as authenticated
       lastTunnelMessageTime = millis();       // First ping 1.5s after the tunnel opens
       Serial.println("[TUNNEL ACTIVE] AES-256-GCM encrypted channel ready.\n");

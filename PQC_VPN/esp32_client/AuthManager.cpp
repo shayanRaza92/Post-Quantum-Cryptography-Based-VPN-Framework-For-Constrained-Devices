@@ -150,7 +150,7 @@ bool AuthManager::readExact(uint8_t* buffer, size_t count, unsigned long timeout
       buffer[bytesRead++] = _client.read();
     }
     if (bytesRead < count) {
-      // Gateway closed the socket (e.g. device ID not in allowlist) and nothing is left to read:
+      // Gateway closed the socket (e.g. device ID not registered) and nothing is left to read:
       // fail immediately instead of waiting out the full timeout.
       if (!_client.connected() && !_client.available()) {
         break;
@@ -183,6 +183,21 @@ void AuthManager::buildClientTranscript(const uint8_t* msg2, uint8_t* outDigest)
   crypto_hash_sha256_update(&state, _cachedMsg1, MSG1_CLIENT_HELLO_SIZE);
   crypto_hash_sha256_update(&state, msg2, MSG2_SERVER_PROOF_SIZE);
   crypto_hash_sha256_final(&state, outDigest);
+}
+
+// SA binding: TH = SHA-256("VPN-v1|SA-BIND|" || MSG1 || MSG2 || MSG3 || MSG4 || PK_client || PK_gateway)
+// Every message exactly as it went over the wire, plus both long-term ML-DSA-44 public keys.
+void AuthManager::computeHandshakeHash(const uint8_t* msg4) {
+  crypto_hash_sha256_state state;
+  crypto_hash_sha256_init(&state);
+  crypto_hash_sha256_update(&state, (const unsigned char*)"VPN-v1|SA-BIND|", 15);
+  crypto_hash_sha256_update(&state, _cachedMsg1, MSG1_CLIENT_HELLO_SIZE);
+  crypto_hash_sha256_update(&state, _cachedMsg2, MSG2_SERVER_PROOF_SIZE);
+  crypto_hash_sha256_update(&state, s_msg3Packet, MSG3_CLIENT_PROOF_SIZE);
+  crypto_hash_sha256_update(&state, msg4, MSG4_AUTH_VERDICT_SIZE);
+  crypto_hash_sha256_update(&state, _identity.getPublicKey(), PUBLIC_KEY_LENGTH);
+  crypto_hash_sha256_update(&state, _trustedGatewayKey, PUBLIC_KEY_LENGTH);
+  crypto_hash_sha256_final(&state, _handshakeHash);
 }
 
 // ============================================================================
@@ -309,7 +324,7 @@ bool AuthManager::sendClientHello(uint8_t* outClientNonce) {
 bool AuthManager::receiveServerProof(const uint8_t* clientNonce, uint8_t* outServerNonce) {
   if (!readExact(_cachedMsg2, sizeof(_cachedMsg2))) {
     if (!_client.connected()) {
-      Serial.println("| [ERROR] Gateway closed connection before MSG 2 (device not authorized?).    |");
+      Serial.println("| [ERROR] Gateway closed connection before MSG 2 (device not registered?).    |");
     } else {
       Serial.println("| [ERROR] Timed out waiting for MSG 2 (Server Proof).                         |");
     }
@@ -335,10 +350,10 @@ bool AuthManager::receiveServerProof(const uint8_t* clientNonce, uint8_t* outSer
   uint8_t serverTranscriptDigest[32];
   buildServerTranscript(outServerNonce, kemCiphertext, serverTranscriptDigest);
 
-  // Step 4: Server allowlist authorization check
+  // Step 4: Authentication part 1 - the server looks up the device's registered public key
   printNote("The ESP32 sent its name, a fresh random number, and a ONE-TIME ML-KEM-512 public key (800 bytes). Anyone may see this public key - it can only be used to LOCK a secret that only this ESP32 can unlock.");
-  Serial.printf("\n[Server] [AUTHORIZATION] Checking Device ID '%s' against local allowlist database...\n", idStr);
-  Serial.println("[Server] [AUTHORIZATION] Status: ALLOWED (Authorized client public key loaded from database)");
+  Serial.printf("\n[Server] [AUTHENTICATION] Looking up the registered public key of '%s'...\n", idStr);
+  Serial.println("[Server] [AUTHENTICATION] Registered key found. It will check this device's signature in MSG 3.");
   Serial.println("+-----------------------------------------------------------------------------+");
   Serial.println("| Registered Client ML-DSA-44 Public Key [PK_cli] (1312 Bytes / 10496-bits)   |");
   printMlDsaPubKeyBox(_identity.getPublicKey());
@@ -727,7 +742,10 @@ bool AuthManager::receiveServerVerdict() {
   }
   Serial.println("+-----------------------------------------------------------------------------+\n");
 
-  if (tagValid) printSummary();
+  if (tagValid) {
+    computeHandshakeHash(packet);   // The SA of the tunnel will be bound to this exact handshake
+    printSummary();
+  }
   return tagValid;
 }
 
@@ -758,6 +776,7 @@ bool AuthManager::performMutualAuthentication() {
   sodium_memzero(_kConfirm, sizeof(_kConfirm));
   if (!success) {
     sodium_memzero(_kSession, sizeof(_kSession));
+    sodium_memzero(_handshakeHash, sizeof(_handshakeHash));
   }
 
   return success;

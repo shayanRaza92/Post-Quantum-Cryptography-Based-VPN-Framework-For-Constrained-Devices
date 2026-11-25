@@ -22,6 +22,10 @@ static void writeU64BE(uint8_t* p, uint64_t v) {
   for (int i = 7; i >= 0; i--) { p[i] = (uint8_t)(v & 0xFF); v >>= 8; }
 }
 
+static void writeU32BE(uint8_t* p, uint32_t v) {
+  p[0] = (uint8_t)(v >> 24); p[1] = (uint8_t)(v >> 16); p[2] = (uint8_t)(v >> 8); p[3] = (uint8_t)v;
+}
+
 static uint64_t readU64BE(const uint8_t* p) {
   uint64_t v = 0;
   for (int i = 0; i < 8; i++) v = (v << 8) | p[i];
@@ -38,20 +42,24 @@ static const char* typeName(uint8_t t) {
 }
 
 SecureTunnel::SecureTunnel(WiFiClient& client)
-  : _client(client), _active(false), _txSeq(0), _rxSeq(0), _epoch(0), _keyStartMs(0),
+  : _client(client), _active(false), _spi(0), _txSeq(0), _rxSeq(0), _epoch(0), _keyStartMs(0),
     _lastType(0), _rxHave(0) {
   memset(_kSession, 0, sizeof(_kSession));
+  memset(_handshakeHash, 0, sizeof(_handshakeHash));
   memset(_kC2S, 0, sizeof(_kC2S));
   memset(_kS2C, 0, sizeof(_kS2C));
   mbedtls_gcm_init(&_txCtx);
   mbedtls_gcm_init(&_rxCtx);
 }
 
-// HKDF-Expand (RFC 5869) single block: T1 = HMAC-SHA256(PRK = K_session, info || 0x01)
-void SecureTunnel::deriveKey(const uint8_t* kSession, const char* label, uint8_t* out) {
+// HKDF-Expand (RFC 5869) single block: T1 = HMAC-SHA256(PRK, label || epoch (4B BE) || 0x01)
+void SecureTunnel::deriveKey(const uint8_t* prk, const char* label, uint32_t epoch, uint8_t* out) {
   crypto_auth_hmacsha256_state st;
-  crypto_auth_hmacsha256_init(&st, kSession, 32);
+  crypto_auth_hmacsha256_init(&st, prk, 32);
   crypto_auth_hmacsha256_update(&st, (const unsigned char*)label, strlen(label));
+  uint8_t epochBE[4];
+  writeU32BE(epochBE, epoch);
+  crypto_auth_hmacsha256_update(&st, epochBE, 4);
   const uint8_t one = 0x01;
   crypto_auth_hmacsha256_update(&st, &one, 1);
   crypto_auth_hmacsha256_final(&st, out);
@@ -66,20 +74,50 @@ void SecureTunnel::buildNonce(uint32_t dirId, uint64_t seq, uint8_t* nonce12) {
   writeU64BE(nonce12 + 4, seq);
 }
 
-// Derives both direction keys from kSession, loads the GCM contexts, resets counters
-bool SecureTunnel::installKeys(const uint8_t* kSession) {
+// AAD of every frame = SPI (4) || epoch (4B BE) || LEN || SEQ: a frame is only valid in its own SA
+void SecureTunnel::buildAad(const uint8_t* header, uint8_t* aad) const {
+  writeU32BE(aad, _spi);
+  writeU32BE(aad + 4, _epoch);
+  memcpy(aad + 8, header, HEADER_SIZE);
+}
+
+// Deletes the current SA (keys wiped, GCM contexts freed); the handshake hash is kept
+void SecureTunnel::deleteSA() {
+  if (_active) {
+    mbedtls_gcm_free(&_txCtx);
+    mbedtls_gcm_free(&_rxCtx);
+  }
+  sodium_memzero(_kSession, sizeof(_kSession));
+  sodium_memzero(_kC2S, sizeof(_kC2S));
+  sodium_memzero(_kS2C, sizeof(_kS2C));
+  _spi = 0;
+  _txSeq = _rxSeq = 0;
+  _rxHave = 0;
+  _active = false;
+}
+
+// Installs the SA of `epoch`: SPI and both direction keys from HKDF(salt = TH, IKM = kSession)
+bool SecureTunnel::installSA(const uint8_t* kSession, uint32_t epoch) {
   uint8_t copy[32];
-  memcpy(copy, kSession, 32);   // kSession may point into _kSession, which end() wipes
-  end();
+  memcpy(copy, kSession, 32);   // kSession may point into _kSession, which deleteSA() wipes
+  deleteSA();
   memcpy(_kSession, copy, 32);
   sodium_memzero(copy, sizeof(copy));
 
-  deriveKey(_kSession, "VPN-v1|TUNNEL|C2S", _kC2S);
-  deriveKey(_kSession, "VPN-v1|TUNNEL|S2C", _kS2C);
+  uint8_t prk[32];              // HKDF-Extract: PRK = HMAC-SHA256(key = TH, K)
+  crypto_auth_hmacsha256(prk, _kSession, 32, _handshakeHash);
+  uint8_t spiBlock[32];
+  deriveKey(prk, "VPN-v1|SA|SPI", epoch, spiBlock);
+  deriveKey(prk, "VPN-v1|SA|C2S", epoch, _kC2S);
+  deriveKey(prk, "VPN-v1|SA|S2C", epoch, _kS2C);
+  sodium_memzero(prk, sizeof(prk));
+  _spi = ((uint32_t)spiBlock[0] << 24) | ((uint32_t)spiBlock[1] << 16) | ((uint32_t)spiBlock[2] << 8) | spiBlock[3];
+  sodium_memzero(spiBlock, sizeof(spiBlock));
+  _epoch = epoch;
 
   mbedtls_gcm_init(&_txCtx);
   mbedtls_gcm_init(&_rxCtx);
-  _active = true;   // Contexts exist from here on, so end() must free them
+  _active = true;   // Contexts exist from here on, so deleteSA() must free them
   if (mbedtls_gcm_setkey(&_txCtx, MBEDTLS_CIPHER_ID_AES, _kC2S, 256) != 0 ||
       mbedtls_gcm_setkey(&_rxCtx, MBEDTLS_CIPHER_ID_AES, _kS2C, 256) != 0) {
     Serial.println("[TUNNEL-ERROR] AES-256-GCM key setup failed.");
@@ -93,27 +131,34 @@ bool SecureTunnel::installKeys(const uint8_t* kSession) {
   return true;
 }
 
-bool SecureTunnel::begin(const uint8_t* kSession) {
-  if (!installKeys(kSession)) return false;
-  _epoch = 0;
+bool SecureTunnel::begin(const uint8_t* kSession, const uint8_t* handshakeHash) {
+  memcpy(_handshakeHash, handshakeHash, 32);
+  if (!installSA(kSession, 0)) return false;
 
   Serial.println("+-----------------------------------------------------------------------------+");
-  Serial.println("| AES-256-GCM TUNNEL KEYS (HKDF-Expand from K_session)                        |");
+  Serial.println("| SECURITY ASSOCIATION (SA) INSTALLED - bound to this handshake               |");
   Serial.println("+-----------------------------------------------------------------------------+");
-  Serial.println("| K_c2s = HMAC-SHA256(K_session, \"VPN-v1|TUNNEL|C2S\" || 0x01)  ESP32->Gateway  |");
+  Serial.println("| TH = SHA-256(\"VPN-v1|SA-BIND|\" || MSG1..MSG4 || PK_client || PK_gateway)    |");
+  printHexRow(_handshakeHash, 32);
+  Serial.println("+-----------------------------------------------------------------------------+");
+  Serial.printf ("| SPI 0x%08lX   epoch 0   peer: VPN gateway   AES-256-GCM, msg # from 0    |\n",
+                 (unsigned long)_spi);
+  Serial.println("+-----------------------------------------------------------------------------+");
+  Serial.println("| K_c2s = HKDF(salt TH, K_session, \"VPN-v1|SA|C2S\"||epoch)  ESP32->Gateway    |");
   printHexRow(_kC2S, 32);
   Serial.println("+-----------------------------------------------------------------------------+");
-  Serial.println("| K_s2c = HMAC-SHA256(K_session, \"VPN-v1|TUNNEL|S2C\" || 0x01)  Gateway->ESP32  |");
+  Serial.println("| K_s2c = HKDF(salt TH, K_session, \"VPN-v1|SA|S2C\"||epoch)  Gateway->ESP32    |");
   printHexRow(_kS2C, 32);
   Serial.println("+-----------------------------------------------------------------------------+");
-  Serial.println("| Frame: [2B LEN][8B SEQ][CIPHERTEXT][16B TAG]  Nonce = DIR(4B) || SEQ(8B)    |");
+  Serial.println("| Frame: [2B LEN][8B SEQ][CIPHERTEXT][16B TAG]  AAD = SPI||epoch||LEN||SEQ    |");
   Serial.println("+-----------------------------------------------------------------------------+");
   Serial.println("  >> In plain words:");
-  Serial.println("     Every message is now encrypted with AES-256-GCM. 'ciphertext' is what");
-  Serial.println("     actually travels over Wi-Fi and is unreadable without the key. 'tag");
-  Serial.println("     VALID' means the message was not changed on the way. 'msg #' must go up");
-  Serial.println("     by exactly one, so old messages cannot be replayed. The keys are");
-  Serial.println("     replaced regularly (REKEY) by a fresh key exchange inside the tunnel.");
+  Serial.println("     The tunnel is now one Security Association (SA) with its own ID (SPI).");
+  Serial.println("     Its keys are made from THIS handshake and the two identities, so they");
+  Serial.println("     cannot belong to any other session. Every message is encrypted with");
+  Serial.println("     AES-256-GCM. 'tag VALID' means the message was not changed and belongs");
+  Serial.println("     to this SA. 'msg #' must go up by exactly one, so old messages cannot be");
+  Serial.println("     replayed. A REKEY replaces the SA with a new one (new SPI, new keys).");
   Serial.println();
   return true;
 }
@@ -141,13 +186,13 @@ bool SecureTunnel::rekey(const uint8_t sharedSecret[32], uint32_t newEpoch) {
   sodium_memzero(prk, sizeof(prk));
   sodium_memzero(&st, sizeof(st));
 
-  bool ok = installKeys(kNew);   // Wipes the old keys, resets SEQ to 0 in both directions
+  const uint32_t oldSpi = _spi;
+  bool ok = installSA(kNew, newEpoch);   // Deletes the old SA, resets SEQ to 0 in both directions
   sodium_memzero(kNew, sizeof(kNew));
   if (!ok) return false;
-  _epoch = newEpoch;
 
-  Serial.printf("[REKEY] Epoch %lu installed: new K_session, new K_c2s / K_s2c, msg # reset to 0.\n",
-                (unsigned long)_epoch);
+  Serial.printf("[REKEY] New SA 0x%08lX (epoch %lu) installed, old SA 0x%08lX deleted. msg # reset to 0.\n",
+                (unsigned long)_spi, (unsigned long)_epoch, (unsigned long)oldSpi);
   Serial.print ("        K_c2s = ");
   printHex(_kC2S, 8);
   Serial.print("...   K_s2c = ");
@@ -179,9 +224,11 @@ bool SecureTunnel::sendTyped(uint8_t type, const uint8_t* payload, size_t len) {
 
   uint8_t* ct  = frame + HEADER_SIZE;
   uint8_t* tag = ct + ptLen;
+  uint8_t aad[AAD_SIZE];
+  buildAad(frame, aad);
   int rc = mbedtls_gcm_crypt_and_tag(&_txCtx, MBEDTLS_GCM_ENCRYPT, ptLen,
                                      nonce, sizeof(nonce),
-                                     frame, HEADER_SIZE,     // AAD = LEN || SEQ
+                                     aad, AAD_SIZE,          // AAD = SPI || epoch || LEN || SEQ
                                      plain, ct, TAG_SIZE, tag);
   sodium_memzero(plain, ptLen);
   if (rc != 0) {
@@ -192,8 +239,8 @@ bool SecureTunnel::sendTyped(uint8_t type, const uint8_t* payload, size_t len) {
   const size_t frameLen = HEADER_SIZE + ptLen + TAG_SIZE;
   size_t written = _client.write(frame, frameLen);
 
-  Serial.printf("-> SENT encrypted %s msg #%llu (%u bytes over Wi-Fi, key epoch %lu)\n", typeName(type),
-                (unsigned long long)_txSeq, (unsigned)frameLen, (unsigned long)_epoch);
+  Serial.printf("-> SENT encrypted %s msg #%llu (%u bytes over Wi-Fi, SA 0x%08lX)\n", typeName(type),
+                (unsigned long long)_txSeq, (unsigned)frameLen, (unsigned long)_spi);
   if (type == MSG_DATA) {
     Serial.printf("     message    : \"%.*s\"\n", (int)len, (const char*)payload);
   }
@@ -254,8 +301,10 @@ int SecureTunnel::poll(uint8_t* out, size_t outMax) {
 
   uint8_t nonce[12];
   buildNonce(DIR_S2C, seq, nonce);
+  uint8_t aad[AAD_SIZE];
+  buildAad(_rxBuf, aad);
   int rc = mbedtls_gcm_auth_decrypt(&_rxCtx, ctLen, nonce, sizeof(nonce),
-                                    _rxBuf, HEADER_SIZE, tag, TAG_SIZE, ct, _plainBuf);
+                                    aad, AAD_SIZE, tag, TAG_SIZE, ct, _plainBuf);
   if (rc != 0) {
     Serial.println("[TUNNEL-ERROR] AES-GCM authentication FAILED (tampered frame). Dropping session.");
     sodium_memzero(_plainBuf, ctLen);
@@ -273,14 +322,14 @@ int SecureTunnel::poll(uint8_t* out, size_t outMax) {
   memcpy(out, _plainBuf + 1, payloadLen);
   sodium_memzero(_plainBuf, ctLen);
 
-  Serial.printf("<- RECEIVED encrypted %s msg #%llu (%u bytes over Wi-Fi, key epoch %lu)\n", typeName(_lastType),
-                (unsigned long long)seq, (unsigned)(HEADER_SIZE + ctLen + TAG_SIZE), (unsigned long)_epoch);
+  Serial.printf("<- RECEIVED encrypted %s msg #%llu (%u bytes over Wi-Fi, SA 0x%08lX)\n", typeName(_lastType),
+                (unsigned long long)seq, (unsigned)(HEADER_SIZE + ctLen + TAG_SIZE), (unsigned long)_spi);
   Serial.print ("     ciphertext : ");
   printHex(ct, ctLen < 12 ? ctLen : 12);
   Serial.println("...  (unreadable without the key)");
   Serial.print ("     auth tag   : ");
   printHex(tag, TAG_SIZE);
-  Serial.println("  -> VALID (not tampered)");
+  Serial.println("  -> VALID (not tampered, this SA)");
   if (_lastType == MSG_DATA) {
     Serial.printf("     decrypted  : \"%.*s\"\n\n", (int)payloadLen, (const char*)out);
   } else {
@@ -290,14 +339,7 @@ int SecureTunnel::poll(uint8_t* out, size_t outMax) {
 }
 
 void SecureTunnel::end() {
-  if (_active) {
-    mbedtls_gcm_free(&_txCtx);
-    mbedtls_gcm_free(&_rxCtx);
-  }
-  sodium_memzero(_kSession, sizeof(_kSession));
-  sodium_memzero(_kC2S, sizeof(_kC2S));
-  sodium_memzero(_kS2C, sizeof(_kS2C));
-  _txSeq = _rxSeq = 0;
-  _rxHave = 0;
-  _active = false;
+  deleteSA();
+  sodium_memzero(_handshakeHash, sizeof(_handshakeHash));
+  _epoch = 0;
 }

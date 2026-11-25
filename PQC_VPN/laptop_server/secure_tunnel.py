@@ -1,15 +1,20 @@
 """
-AES-256-GCM encrypted data tunnel keyed from the handshake's K_session, with in-tunnel
-rekeying (mirror of esp32_client/SecureTunnel).
+AES-256-GCM encrypted data tunnel, run as a SECURITY ASSOCIATION (SA) bound to the authenticated
+handshake, with in-tunnel rekeying (mirror of esp32_client/SecureTunnel).
 
-Directional keys (HKDF-Expand, RFC 5869, PRK = K_session):
-  K_c2s = HMAC-SHA256(K_session, "VPN-v1|TUNNEL|C2S" || 0x01)   ESP32 -> laptop
-  K_s2c = HMAC-SHA256(K_session, "VPN-v1|TUNNEL|S2C" || 0x01)   laptop -> ESP32
+SA binding. After MSG 4 both sides compute the handshake hash (handshake_hash() below)
+  TH = SHA-256("VPN-v1|SA-BIND|" || MSG1 || MSG2 || MSG3 || MSG4 || PK_client || PK_gateway)
+and derive every SA from TH and the current session key K (HKDF-SHA256, RFC 5869):
+  PRK   = HMAC-SHA256(key = TH, K)
+  SPI   = first 4 B of HMAC-SHA256(PRK, "VPN-v1|SA|SPI" || epoch (4B BE) || 0x01)
+  K_c2s = HMAC-SHA256(PRK, "VPN-v1|SA|C2S" || epoch (4B BE) || 0x01)   ESP32 -> laptop
+  K_s2c = HMAC-SHA256(PRK, "VPN-v1|SA|S2C" || epoch (4B BE) || 0x01)   laptop -> ESP32
+The SPI is not sent; it is authenticated in every frame (AAD).
 
 Wire frame:  [2B LEN (BE)] [8B SEQ (BE)] [N B CIPHERTEXT] [16B GCM TAG]
   LEN   = 8 + N + 16
   Nonce = 4B direction ID (C2S=1, S2C=2) || 8B SEQ
-  AAD   = LEN || SEQ
+  AAD   = SPI (4) || epoch (4B BE) || LEN || SEQ
   SEQ starts at 0 and must increase by exactly 1 per direction (replay / reorder protection).
 
 Plaintext of every frame:  [1B TYPE] [payload]  (payload is at least 1 byte)
@@ -20,7 +25,8 @@ Plaintext of every frame:  [1B TYPE] [payload]  (payload is at least 1 byte)
 Rekey (new keys from a fresh key exchange done inside the authenticated tunnel):
   PRK       = HMAC-SHA256(key = K_session_old, SS_new)
   K_session = HMAC-SHA256(PRK, "VPN-v1|REKEY" || epoch (4B BE) || 0x01)
-  then new K_c2s / K_s2c, SEQ = 0 in both directions.
+  then a NEW SA (new SPI, new K_c2s / K_s2c, still bound to TH), SEQ = 0 in both directions,
+  and the old SA is deleted.
 """
 import hashlib
 import hmac
@@ -44,6 +50,7 @@ MSG_REKEY_RESP = 0x03
 MSG_NAMES = {MSG_DATA: "DATA", MSG_REKEY_REQ: "REKEY_REQ", MSG_REKEY_RESP: "REKEY_RESP"}
 
 REKEY_INFO = b"VPN-v1|REKEY"
+SA_BIND_LABEL = b"VPN-v1|SA-BIND|"
 
 
 class TunnelError(Exception):
@@ -52,6 +59,12 @@ class TunnelError(Exception):
 
 def _hkdf_expand_one_block(prk: bytes, label: bytes) -> bytes:
     return hmac.new(prk, label + b"\x01", hashlib.sha256).digest()
+
+
+def handshake_hash(msg1: bytes, msg2: bytes, msg3: bytes, msg4: bytes,
+                   client_pk: bytes, gateway_pk: bytes) -> bytes:
+    """TH = SHA-256("VPN-v1|SA-BIND|" || MSG1 || MSG2 || MSG3 || MSG4 || PK_client || PK_gateway)."""
+    return hashlib.sha256(SA_BIND_LABEL + msg1 + msg2 + msg3 + msg4 + client_pk + gateway_pk).digest()
 
 
 def _nonce(direction: int, seq: int) -> bytes:
@@ -65,20 +78,24 @@ def derive_rekeyed_session_key(old_k_session: bytes, shared_secret: bytes, epoch
 
 
 class SecureTunnel:
-    def __init__(self, k_session: bytes, role: str = "server"):
-        if len(k_session) != 32:
-            raise ValueError("K_session must be 32 bytes")
+    def __init__(self, k_session: bytes, handshake_hash: bytes, role: str = "server"):
+        if len(k_session) != 32 or len(handshake_hash) != 32:
+            raise ValueError("K_session and the handshake hash must be 32 bytes")
         self.role = role
-        self.epoch = 0
-        self._install(k_session)
+        self.handshake_hash = handshake_hash      # TH: every SA of this tunnel is bound to it
+        self._install(k_session, 0)
         self._buf = bytearray()
         self.last_tx = None
 
-    def _install(self, k_session: bytes):
-        """Derives both direction keys from k_session and resets the counters."""
+    def _install(self, k_session: bytes, epoch: int):
+        """Installs the SA of `epoch` (SPI + both direction keys) and resets the counters."""
         self._k_session = k_session
-        self.k_c2s = _hkdf_expand_one_block(k_session, b"VPN-v1|TUNNEL|C2S")
-        self.k_s2c = _hkdf_expand_one_block(k_session, b"VPN-v1|TUNNEL|S2C")
+        self.epoch = epoch
+        prk = hmac.new(self.handshake_hash, k_session, hashlib.sha256).digest()   # salt = TH
+        ep = struct.pack(">I", epoch)
+        self.spi = struct.unpack(">I", _hkdf_expand_one_block(prk, b"VPN-v1|SA|SPI" + ep)[:4])[0]
+        self.k_c2s = _hkdf_expand_one_block(prk, b"VPN-v1|SA|C2S" + ep)
+        self.k_s2c = _hkdf_expand_one_block(prk, b"VPN-v1|SA|S2C" + ep)
         if self.role == "server":
             self._tx, self._tx_dir = AESGCM(self.k_s2c), DIR_S2C
             self._rx, self._rx_dir = AESGCM(self.k_c2s), DIR_C2S
@@ -90,27 +107,36 @@ class SecureTunnel:
         self.key_started = time.monotonic()
 
     def rekey(self, shared_secret: bytes, epoch: int):
-        """Switches to the keys of `epoch`; both sequence counters restart at 0."""
+        """Installs the new SA of `epoch` (new SPI and keys) and deletes the old one; counters restart at 0."""
         if len(shared_secret) != 32:
             raise ValueError("shared secret must be 32 bytes")
-        self._install(derive_rekeyed_session_key(self._k_session, shared_secret, epoch))
-        self.epoch = epoch
+        self._install(derive_rekeyed_session_key(self._k_session, shared_secret, epoch), epoch)
+
+    def _aad(self, header: bytes) -> bytes:
+        """AAD = SPI || epoch || LEN || SEQ: a frame is only valid in its own SA."""
+        return struct.pack(">II", self.spi, self.epoch) + header
 
     @property
     def key_age(self) -> float:
         return time.monotonic() - self.key_started
 
-    def print_keys(self):
+    def print_keys(self, peer: str = "ESP32"):
         print("+-----------------------------------------------------------------------------+")
-        print("| AES-256-GCM TUNNEL KEYS (HKDF-Expand from K_session)                        |")
+        print("| SECURITY ASSOCIATION (SA) INSTALLED - bound to this handshake               |")
         print("+-----------------------------------------------------------------------------+")
-        print("| K_c2s = HMAC-SHA256(K_session, \"VPN-v1|TUNNEL|C2S\" || 0x01)  ESP32->Laptop  |")
+        print("| TH = SHA-256(\"VPN-v1|SA-BIND|\" || MSG1..MSG4 || PK_client || PK_gateway)    |")
+        print(f"| {self.handshake_hash.hex().upper():<75} |")
+        print("+-----------------------------------------------------------------------------+")
+        sa_line = f"SPI 0x{self.spi:08X}   epoch {self.epoch}   peer: {peer}   AES-256-GCM, msg # from 0"
+        print(f"| {sa_line:<75} |")
+        print("+-----------------------------------------------------------------------------+")
+        print("| K_c2s = HKDF(salt TH, K_session, \"VPN-v1|SA|C2S\"||epoch)   ESP32->Laptop    |")
         print(f"| {self.k_c2s.hex().upper():<75} |")
         print("+-----------------------------------------------------------------------------+")
-        print("| K_s2c = HMAC-SHA256(K_session, \"VPN-v1|TUNNEL|S2C\" || 0x01)  Laptop->ESP32  |")
+        print("| K_s2c = HKDF(salt TH, K_session, \"VPN-v1|SA|S2C\"||epoch)   Laptop->ESP32    |")
         print(f"| {self.k_s2c.hex().upper():<75} |")
         print("+-----------------------------------------------------------------------------+")
-        print("| Frame: [2B LEN][8B SEQ][CIPHERTEXT][16B TAG]  Nonce = DIR(4B) || SEQ(8B)    |")
+        print("| Frame: [2B LEN][8B SEQ][CIPHERTEXT][16B TAG]  AAD = SPI||epoch||LEN||SEQ    |")
         print("| Plaintext: [1B TYPE: DATA / REKEY_REQ / REKEY_RESP] [payload]               |")
         print("+-----------------------------------------------------------------------------+\n")
 
@@ -121,7 +147,7 @@ class SecureTunnel:
         plaintext = bytes([msg_type]) + payload
         header = struct.pack(">HQ", 8 + len(plaintext) + TAG_SIZE, self.tx_seq)
         nonce = _nonce(self._tx_dir, self.tx_seq)
-        ct_tag = self._tx.encrypt(nonce, plaintext, header)
+        ct_tag = self._tx.encrypt(nonce, plaintext, self._aad(header))
         self.last_tx = (self.tx_seq, nonce, ct_tag[:-TAG_SIZE], ct_tag[-TAG_SIZE:])
         self.tx_seq += 1
         return header + ct_tag
@@ -144,7 +170,7 @@ class SecureTunnel:
             if seq != self.rx_seq:
                 raise TunnelError(f"replay/reorder detected (got seq={seq}, expected {self.rx_seq})")
             try:
-                plaintext = self._rx.decrypt(_nonce(self._rx_dir, seq), ct_tag, header)
+                plaintext = self._rx.decrypt(_nonce(self._rx_dir, seq), ct_tag, self._aad(header))
             except InvalidTag:
                 raise TunnelError("AES-GCM authentication FAILED (tampered frame)") from None
             self.rx_seq += 1
