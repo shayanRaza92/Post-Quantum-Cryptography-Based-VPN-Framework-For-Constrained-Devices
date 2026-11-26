@@ -1,0 +1,16 @@
+Shor's algorithm (Qiskit Aer statevector simulator) - factoring
+================================================================
+N =  15 (base a = 7)   qubits = 12 (8 counting + 4 work)   state memory = 64.0 KB
+   period r of 7^x mod 15 = 4   ->   factors = 3 x 5
+   shots that directly gave the factors: 76.9%   (simulation time 0.2 s)
+
+N =  21 (base a = 2)   qubits = 15 (10 counting + 5 work)   state memory = 512.0 KB
+   period r of 2^x mod 21 = 6   ->   factors = 3 x 7
+   shots that directly gave the factors: 81.7%   (simulation time 0.6 s)
+
+N =  35 (base a = 2)   qubits = 18 (12 counting + 6 work)   state memory = 4.0 MB
+   period r of 2^x mod 35 = 12   ->   factors = 5 x 7
+   shots that directly gave the factors: 65.4%   (simulation time 1.4 s)
+
+Classical check: the factors multiply back to N, so the attack worked.
+This breaks RSA in principle: RSA's private key is found from the two factors of N.

@@ -1,0 +1,25 @@
+Harvest now, decrypt later - toy-size attack on our CLASSICAL VPN
+==================================================================
+Toy curve: y^2 = x^3 + 0x + 2 over F_13, 19 points (Curve25519 has about 2^252)
+
+1) TODAY - the attacker only records the Wi-Fi traffic:
+   MSG 1-4 recorded (82 / 128 / 96 / 40 bytes, real format)
+   3 encrypted frames, e.g. 00490000000000000000a3a3b312cd31b39534fae5ed63c7...  (unreadable)
+
+2) LATER - the attacker has a quantum computer and runs Shor's algorithm on the
+   ESP32's one-time public key from MSG 1:
+   qubits = 19 (7 + 7 exponent qubits + 5 point qubits), state memory = 8.0 MB, simulation 1.7 s
+   private key found: k = 12   (true value 12)   [88% of shots gave the right key]
+
+3) The attacker recomputes the shared secret, K_session and the SA (TH is built only
+   from recorded messages and PUBLIC keys), and decrypts every recorded message:
+   -> [esp32-01] GPS 33.6844N 73.0479E, altitude 120 m
+   -> [esp32-01] mission: inspect pipeline sector 7, return at 16:40
+   -> [esp32-01] battery 81%, camera recording ON
+
+RESULT: the classical VPN's recorded traffic is fully decrypted once its key exchange
+(elliptic-curve Diffie-Hellman, like X25519) is broken by Shor's algorithm.
+Signatures, HKDF, SA binding and AES-256-GCM do not help: they all depend on the
+shared secret that Shor recovers.
+
+Our PQC VPN uses ML-KEM-512 for this step instead: see run_pqc_vs_shor.py.

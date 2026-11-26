@@ -1,0 +1,7 @@
+# Test 6 (quantum threat demo). Install into this folder's own venv:
+#   python3 -m venv --system-site-packages .venv && .venv/bin/pip install -r requirements.txt
+qiskit>=1.2
+qiskit-aer>=0.15
+numpy
+matplotlib
+cryptography>=40.0.0

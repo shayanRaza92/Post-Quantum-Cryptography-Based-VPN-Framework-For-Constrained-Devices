@@ -1,0 +1,29 @@
+Shor's algorithm vs. lattice (LWE) problems - toy illustration
+==============================================================
+Part A: the same Shor circuit (16 qubits, state memory 1.0 MB), secret s = 5, q = 13
+  Group problem  f = a + s*b      (X25519 / Ed25519 / RSA style):  86.2% of shots give s
+  LWE problem    f = a + s*b + e  (ML-KEM / ML-DSA style)       :  28.4% of shots give s   (random guessing: 7.7%)
+  -> With exact algebra the period is there and Shor finds the secret most of the time.
+     The small random errors blur that period, so the success rate falls sharply.
+     In this tiny toy (ONE secret number, q = 13) some signal still survives. Real ML-KEM-512
+     hides 512 numbers mod 3329, and no known quantum algorithm (Shor or any other) can undo
+     the errors efficiently: that is why NIST chose it (FIPS 203, Abstract).
+
+Part B: the same idea without quantum computers (toy LWE, q = 13):
+  no errors : linear algebra finds s = [7, 9, 10, 0] (true [7, 9, 10, 0])  -> instant
+  with errors: linear algebra gives [9, 5, 2, 10] (true [2, 12, 8, 8])  -> wrong
+  brute force (try every secret):
+    n = 1:        13 secrets,      0.21 ms, secret found: True
+    n = 2:       169 secrets,      0.19 ms, secret found: True
+    n = 3:     2,197 secrets,      1.27 ms, secret found: True
+    n = 4:    28,561 secrets,     30.09 ms, secret found: True
+    n = 5:   371,293 secrets,    192.41 ms, secret found: True
+    every +1 in n multiplies the work by q = 13.
+
+Part C: the real ML-KEM-512 in our PQC VPN (FIPS 203):
+  secret: 512 numbers mod 3329 (k = 2 polynomials of 256), public key 800 bytes
+  brute force: about 10^1,803 secrets; even Grover's quantum search only halves the
+  exponent (about 10^902). The best known attacks (lattice reduction) are far
+  faster than brute force but are still out of reach; there is no period for Shor to find.
+  NIST: ML-KEM and ML-DSA are believed secure even against adversaries with a quantum
+  computer (FIPS 203 and FIPS 204, Abstract).

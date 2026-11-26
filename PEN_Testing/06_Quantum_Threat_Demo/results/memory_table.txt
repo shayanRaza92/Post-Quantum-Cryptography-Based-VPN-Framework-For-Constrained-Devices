@@ -1,0 +1,27 @@
+Memory needed to simulate a quantum computer (Qiskit Aer, statevector, complex128)
+==============================================================================
+Measured on this laptop (peak memory of the whole Python process; the first ~103 MB is Python + Qiskit itself):
+  qubits  state (calculated)   peak process (measured)      time
+      10             16.0 KB                    124 MB    0.17 s
+      12             64.0 KB                    126 MB    0.19 s
+      14            256.0 KB                    130 MB    0.17 s
+      16              1.0 MB                    129 MB    0.18 s
+      18              4.0 MB                    132 MB    0.45 s
+      20             16.0 MB                    143 MB    0.52 s
+      22             64.0 MB                    190 MB    0.85 s
+      24            256.0 MB                    386 MB    2.23 s
+      26              1.0 GB                  1,152 MB    6.44 s
+
+Calculated (16 bytes x 2^qubits):
+  case                                           qubits  memory
+  Demo 1: factor N = 15                              12  64.0 KB
+  Demo 1: factor N = 21                              15  512.0 KB
+  Demo 1: factor N = 35                              18  4.0 MB
+  Demo 2: toy elliptic-curve key (p = 13)            19  8.0 MB
+  Demo 3: group vs LWE (q = 13)                      16  1.0 MB
+  Largest that fits in this laptop's 16 GB           29  8.0 GB
+  Real 256-bit elliptic curve (X25519/Ed25519)    2,330  10^703 bytes
+  Real RSA-2048                                   4,099  10^1,235 bytes
+
+For comparison: 1 TB = 10^12 bytes. Real X25519 or RSA cannot be simulated at all;
+they need a real, large, error-corrected quantum computer.

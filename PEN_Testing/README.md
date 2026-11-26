@@ -9,6 +9,10 @@ Project (FYP) security evaluation.
 > no ESP32 flash has been extracted. Every script defaults to **dry-run / preparation mode**
 > and refuses to touch a live target until it is explicitly pointed at an authorised lab
 > address and run with an explicit `--run` flag.
+>
+> **Exception:** the offline tests that touch no device or network have been run: Test 4's offline
+> tunnel checks, and Test 6 (quantum threat demo, a local simulation), whose results are in
+> [`06_Quantum_Threat_Demo/results/`](06_Quantum_Threat_Demo/results/).
 
 ## What is being tested
 
@@ -24,7 +28,7 @@ The target is the PQC VPN in `../PQC_VPN/`:
 The classical VPNs (`../Non_PQC_VPN/`, `../Non_PQC_VPN_DHT22/`, `../Non_PQC_VPN_ESP32_Gateway/`)
 are **out of scope** and must not be modified.
 
-## The five test categories
+## The test categories
 
 | # | Folder | What it checks | Security property |
 |---|--------|----------------|-------------------|
@@ -33,6 +37,7 @@ are **out of scope** and must not be modified.
 | 3 | [`03_Handshake_Protocol_Security/`](03_Handshake_Protocol_Security/) | 4-message handshake: MITM, replay, downgrade, key substitution, transcript integrity | Mutual authentication + key-exchange integrity |
 | 4 | [`04_AES_GCM_Tunnel_Security/`](04_AES_GCM_Tunnel_Security/) | Ciphertext/tag tampering, nonce uniqueness, replay, reorder, cross-direction, rekeying | Confidentiality + integrity + replay protection |
 | 5 | [`05_Gateway_DoS_Resilience/`](05_Gateway_DoS_Resilience/) | Concurrent-handshake caps, per-IP limits, rate limiting, slowloris, cleanup | Availability / resource exhaustion |
+| 6 | [`06_Quantum_Threat_Demo/`](06_Quantum_Threat_Demo/) | Offline, toy-size Qiskit simulation: Shor breaks RSA / elliptic curves and decrypts a recorded classical-VPN session; Shor does not apply to ML-KEM / ML-DSA (LWE). Reads the classical VPN code, never changes it | Quantum resistance of the key exchange |
 
 Each category folder has its own `README.md` that fully explains the test (purpose,
 vulnerability, mechanism, affected source files, tools, execution, expected secure behaviour,
