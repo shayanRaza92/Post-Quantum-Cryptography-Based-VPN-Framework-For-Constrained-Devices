@@ -8,11 +8,16 @@ The ESP32 (the drone) runs the firmware in mode "W". This program, on the laptop
      signature, for growing amounts of data and in two link styles:
        udp  one UDP datagram per message (the IP layer splits it if it does not fit one packet)
        mav  MAVLink-sized frames, at most 255 payload bytes each (like a drone radio link)
+       tunnel  real MAVLink 2 TUNNEL packets (official C library on the drone, pymavlink here)
+       v2ext   real MAVLink 2 V2_EXTENSION packets (same)
   4. verifies every signature (OpenSSL via 'cryptography' for the classical algorithms, our
      own ML-DSA build for ML-DSA), and writes one CSV line per authentication.
 
     python3 tools/gcs_link_test.py --iface wlo1
     python3 tools/gcs_link_test.py --iface wlo1 --runs 5          # quick test
+    tools/.venv/bin/python tools/gcs_link_test.py --iface wlo1 --runs 100 --styles tunnel,v2ext --sizes 64,1024
+                                       # real MAVLink 2 (needs pymavlink: python3 -m venv --system-site-packages
+                                       # tools/.venv && tools/.venv/bin/pip install pymavlink)
 
 Then:  python3 tools/analyze_link.py results/e3/raw/link_<date>_<time>
 Message formats: firmware/sig_bench_unified/link_protocol.h.
@@ -44,7 +49,10 @@ ALGS = ["Ed25519", "ECDSA-P256", "RSA-3072", "ML-DSA-44", "ML-DSA-65", "ML-DSA-8
 SIG_MAX = {"Ed25519": 64, "ECDSA-P256": 72, "RSA-3072": 384, "ML-DSA-44": 2420, "ML-DSA-65": 3309, "ML-DSA-87": 4627}
 PK_LEN = {"Ed25519": 32, "ECDSA-P256": 65, "RSA-3072": 384, "ML-DSA-44": 1312, "ML-DSA-65": 1952, "ML-DSA-87": 2592}
 BASE_SIZES = [64, 256, 1024, 4096, 8192]
-STYLES = {"udp": 0, "mav": 1}
+STYLES = {"udp": 0, "mav": 1, "tunnel": 2, "v2ext": 3}
+MAVLINK_FRAG_HDR = 5
+STYLE_CHUNK = {"udp": UDP_MAX_ONE_PACKET, "mav": MAV_PAYLOAD,
+               "tunnel": 128 - MAVLINK_FRAG_HDR, "v2ext": 249 - MAVLINK_FRAG_HDR}
 
 
 def header(mtype, alg, style, seq, dlen, slen):
@@ -59,12 +67,39 @@ def parse_header(b):
             "dlen": int.from_bytes(b[8:10], "big"), "slen": int.from_bytes(b[10:12], "big")}
 
 
-def sizes_for(alg, style):
+def sizes_for(alg, style, base=None):
     """The base sizes plus, where possible, the largest data that fits one packet (B) and B + 1."""
-    limit = UDP_MAX_ONE_PACKET if style == "udp" else MAV_PAYLOAD
-    b = limit - HDR - SIG_MAX[alg]
+    b = STYLE_CHUNK[style] - HDR - SIG_MAX[alg]
     extra = [b, b + 1] if b >= MIN_DATA else []
-    return sorted(set(BASE_SIZES + extra))
+    return sorted(set((base or BASE_SIZES) + extra))
+
+
+class MavlinkReader:
+    """Official MAVLink 2 parser (pymavlink, common dialect): checks the CRC of every packet."""
+    def __init__(self):
+        from pymavlink.dialects.v20 import common
+        self.mav = common.MAVLink(None, srcSystem=255, srcComponent=190)
+        self.mav.robust_parsing = True
+        self.packets = self.bad = 0
+
+    def fragment(self, datagram):
+        """Returns (message sequence, index, count, bytes) of a TUNNEL / V2_EXTENSION packet, or None."""
+        try:
+            msgs = self.mav.parse_buffer(datagram) or []
+        except Exception:
+            msgs = []
+        for m in msgs:
+            t = m.get_type()
+            if t == "TUNNEL":
+                pl = bytes(m.payload[:m.payload_length])
+            elif t == "V2_EXTENSION":
+                pl = bytes(m.payload)
+            else:
+                self.bad += t == "BAD_DATA"
+                continue
+            self.packets += 1
+            return int.from_bytes(pl[0:2], "big"), pl[2], pl[3], pl[MAVLINK_FRAG_HDR:MAVLINK_FRAG_HDR + pl[4]]
+        return None
 
 
 # ---- verifiers --------------------------------------------------------------------------
@@ -111,8 +146,11 @@ class Verifier:
 
 
 # ---- receiving --------------------------------------------------------------------------
+MAVREADER = None
+
+
 def receive_message(sock, want_type, seq, style, deadline):
-    """Whole message (udp: one datagram; mav: all frames). Returns (bytes, frames) or (None, frames)."""
+    """Whole message (udp: one datagram; mav/tunnel/v2ext: all frames). Returns (bytes, frames) or (None, frames)."""
     frames, count = {}, None
     while time.monotonic() < deadline:
         sock.settimeout(max(0.001, deadline - time.monotonic()))
@@ -120,7 +158,14 @@ def receive_message(sock, want_type, seq, style, deadline):
             pkt, _ = sock.recvfrom(65535)
         except socket.timeout:
             break
-        if style == 1 and pkt[0:2] == b"DF" and len(pkt) >= FHDR:
+        if style >= 2 and pkt[:1] == b"\xfd":                 # a real MAVLink 2 packet
+            f = MAVREADER.fragment(pkt) if want_type == AUTH else None
+            if f is None or f[0] != seq:
+                continue
+            frames[f[1]] = f[3]
+            if len(frames) == f[2]:
+                return b"".join(frames[i] for i in range(f[2])), f[2]
+        elif style == 1 and pkt[0:2] == b"DF" and len(pkt) >= FHDR:
             if pkt[2] != want_type or int.from_bytes(pkt[4:6], "big") != seq:
                 continue
             idx, count = pkt[6], pkt[7]
@@ -139,10 +184,18 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--iface", default="wlo1", help="Wi-Fi interface to capture on (see: ip -br addr)")
     ap.add_argument("--runs", type=int, default=20, help="authentications per algorithm, style and size")
-    ap.add_argument("--styles", default="udp,mav")
+    ap.add_argument("--styles", default="udp,mav", help="any of udp,mav,tunnel,v2ext")
+    ap.add_argument("--sizes", help="base data sizes, e.g. 64,1024 (default 64,256,1024,4096,8192)")
     ap.add_argument("--no-capture", action="store_true", help="do not start dumpcap")
     args = ap.parse_args()
     styles = [s for s in args.styles.split(",") if s in STYLES]
+    base_sizes = [int(x) for x in args.sizes.split(",")] if args.sizes else BASE_SIZES
+    global MAVREADER
+    if any(STYLES[s] >= 2 for s in styles):
+        try:
+            MAVREADER = MavlinkReader()
+        except ImportError:
+            sys.exit("The tunnel/v2ext styles need pymavlink. Run with tools/.venv/bin/python (see the top of this file).")
 
     power_save = "unknown"
     try:                                  # Wi-Fi power saving of the ground station delays replies
@@ -193,7 +246,7 @@ def main():
         sys.exit("The firmware must have all six algorithms built in.")
 
     meta = {"date": dt.datetime.now().isoformat(timespec="seconds"), "iface": args.iface, "drone_ip": drone[0],
-            "drone_id": drone_id, "runs": args.runs, "styles": styles, "base_sizes": BASE_SIZES,
+            "drone_id": drone_id, "runs": args.runs, "styles": styles, "base_sizes": base_sizes,
             "udp_max_one_packet": UDP_MAX_ONE_PACKET, "mav_payload": MAV_PAYLOAD, "gcs_wifi_power_save": power_save}
     rows, seq = [], 0
     started = time.time()
@@ -217,7 +270,7 @@ def main():
             receive_message(sock, STAT, seq, 0, time.monotonic() + 1)
         for style in styles:
             st = STYLES[style]
-            for dlen in sizes_for(alg, style):
+            for dlen in sizes_for(alg, style, base_sizes):
                 ok_count = lost = 0
                 for rep in range(args.runs):
                     seq = (seq + 1) & 0xFFFF
@@ -252,12 +305,17 @@ def main():
                         lost += 1
                     rows.append(row)
                     time.sleep(0.05)
-                print(f"  {style:3s} data {dlen:5d} B: {ok_count}/{args.runs} verified, {lost} lost")
+                print(f"  {style:6s} data {dlen:5d} B: {ok_count}/{args.runs} verified, {lost} lost")
     for _ in range(3):
         seq = (seq + 1) & 0xFFFF
         sock.sendto(header(DONE, 0, 0, seq, 0, 0), drone)
         time.sleep(0.2)
     meta["seconds"] = round(time.time() - started, 1)
+    if MAVREADER:
+        import importlib.metadata
+        meta["pymavlink"] = importlib.metadata.version("pymavlink")
+        meta["mavlink_packets_parsed"] = MAVREADER.packets
+        meta["mavlink_bad_packets"] = MAVREADER.bad
 
     cols = ["algorithm", "style", "data_len", "rep", "seq", "t_send_epoch", "lost", "frames", "sig_len",
             "message_len", "auth_ok", "challenge_ok", "rtt_ms", "verify_ms", "drone_sign_ms", "drone_total_ms",

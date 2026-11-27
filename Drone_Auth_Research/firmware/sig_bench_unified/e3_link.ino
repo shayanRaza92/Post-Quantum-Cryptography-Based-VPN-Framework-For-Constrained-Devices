@@ -5,8 +5,10 @@
 // The ESP32 plays the drone. The ground station sends a random challenge; the drone signs
 // [header | challenge, drone id, drone clock, data] and sends it back, either as ONE UDP datagram
 // (style "udp": the IP layer splits it if it is bigger than a Wi-Fi packet) or cut into
-// MAVLink-sized frames of at most 255 payload bytes (style "mav"). The ground station verifies
-// it. Wireshark on the laptop records every packet. Message formats: link_protocol.h.
+// MAVLink-sized frames of at most 255 payload bytes (style "mav"), or as real MAVLink 2 TUNNEL or
+// V2_EXTENSION packets built with the official MAVLink C library (styles "tunnel" and "v2ext").
+// The ground station verifies it. Wireshark on the laptop records every packet. Message formats:
+// link_protocol.h.
 //
 // Signing runs in a task with a 64 KB stack on core 1; Wi-Fi runs on core 0. Wi-Fi power
 // saving is switched off, so the radio answers at once.
@@ -17,11 +19,16 @@
 #include <WiFi.h>
 #include "lwip/sockets.h"
 #include "link_config.h"
+// Official MAVLink 2 C library (c_library_v2, common dialect), copied unmodified into src/mavlink
+#include "src/mavlink/common/mavlink.h"
 
 static int s_sock = -1;
 static uint8_t s_tx[HDR_LEN + MAX_DATA_LEN + MAX_SIG_BYTES];   // one whole message
 static uint8_t s_rx[1500];
 static uint8_t s_frame[FRAME_HDR_LEN + MAV_PAYLOAD];
+static uint8_t s_mavbuf[MAVLINK_MAX_PACKET_LEN];
+static uint8_t s_mavpayload[249];
+static mavlink_message_t s_mavmsg;
 static int s_cur_alg = -1;
 static uint32_t s_send_retries = 0, s_auth_sent = 0, s_accepted = 0, s_rejected = 0;
 
@@ -46,8 +53,32 @@ static int send_datagram(const sockaddr_in* to, const uint8_t* buf, size_t len) 
   return -1;
 }
 
+// Styles tunnel/v2ext: the message in real MAVLink 2 packets (TUNNEL or V2_EXTENSION), one per datagram
+static int send_mavlink(const sockaddr_in* to, const uint8_t* msg, size_t len, uint8_t style) {
+  const size_t chunk = style == STYLE_TUNNEL ? MAVLINK_TUNNEL_DATA : MAVLINK_V2EXT_DATA;
+  uint8_t count = (uint8_t)((len + chunk - 1) / chunk);
+  for (uint8_t idx = 0; idx < count; idx++) {
+    size_t off = (size_t)idx * chunk;
+    size_t n = len - off < chunk ? len - off : chunk;
+    memset(s_mavpayload, 0, sizeof s_mavpayload);
+    s_mavpayload[0] = msg[6]; s_mavpayload[1] = msg[7];   // sequence of the whole message
+    s_mavpayload[2] = idx; s_mavpayload[3] = count; s_mavpayload[4] = (uint8_t)n;
+    memcpy(s_mavpayload + MAVLINK_FRAG_HDR, msg + off, n);
+    if (style == STYLE_TUNNEL)
+      mavlink_msg_tunnel_pack(MAV_SYSID_DRONE, MAV_COMPID_DRONE, &s_mavmsg, MAV_SYSID_GCS, MAV_COMPID_GCS,
+                              MAVLINK_LOCAL_TYPE, (uint8_t)(MAVLINK_FRAG_HDR + n), s_mavpayload);
+    else
+      mavlink_msg_v2_extension_pack(MAV_SYSID_DRONE, MAV_COMPID_DRONE, &s_mavmsg, 0, MAV_SYSID_GCS,
+                                    MAV_COMPID_GCS, MAVLINK_LOCAL_TYPE, s_mavpayload);
+    uint16_t blen = mavlink_msg_to_send_buffer(s_mavbuf, &s_mavmsg);
+    if (send_datagram(to, s_mavbuf, blen) != 0) return -1;
+  }
+  return 0;
+}
+
 static int send_message(const sockaddr_in* to, const uint8_t* msg, size_t len, uint8_t style) {
-  if (style == 0) return send_datagram(to, msg, len);
+  if (style == STYLE_UDP) return send_datagram(to, msg, len);
+  if (style == STYLE_TUNNEL || style == STYLE_V2EXT) return send_mavlink(to, msg, len, style);
   uint8_t count = (uint8_t)((len + MAV_PAYLOAD - 1) / MAV_PAYLOAD);
   for (uint8_t idx = 0; idx < count; idx++) {
     size_t off = (size_t)idx * MAV_PAYLOAD;
@@ -85,7 +116,7 @@ static void handle_getkey(const sockaddr_in* from, uint8_t alg, uint16_t seq) {
 static void handle_challenge(const sockaddr_in* from, const uint8_t* rx, int n) {
   uint8_t alg = rx[4], style = rx[5];
   uint16_t seq = get16(rx + 6), dlen = get16(rx + 8);
-  if (alg != s_cur_alg || n < HDR_LEN + 32 || dlen < MIN_DATA_LEN || dlen > MAX_DATA_LEN || style > 1) return;
+  if (alg != s_cur_alg || n < HDR_LEN + 32 || dlen < MIN_DATA_LEN || dlen > MAX_DATA_LEN || style > STYLE_V2EXT) return;
   int64_t t_rx = esp_timer_get_time();
   const SigAlgorithm* a = ALGORITHMS[alg];
 
@@ -157,6 +188,9 @@ static void e3_server_task(void*) {
 void run_e3() {
   print_meta_common();
   Serial.printf("META,link,udp port %d, MAVLink-sized frames of %d payload bytes\n", LINK_PORT, MAV_PAYLOAD);
+  Serial.printf("META,mavlink,c_library_v2 common dialect (built %s), wire protocol %s, TUNNEL %d B and "
+                "V2_EXTENSION %d B of message per packet\n", MAVLINK_BUILD_DATE, MAVLINK_WIRE_PROTOCOL_VERSION,
+                MAVLINK_TUNNEL_DATA, MAVLINK_V2EXT_DATA);
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);
   WiFi.begin(LINK_WIFI_SSID, LINK_WIFI_PASSWORD);

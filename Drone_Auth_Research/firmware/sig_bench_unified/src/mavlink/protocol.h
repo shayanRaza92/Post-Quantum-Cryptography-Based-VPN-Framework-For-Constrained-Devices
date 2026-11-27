@@ -1,0 +1,492 @@
+#pragma once
+
+#include "string.h"
+#include "mavlink_types.h"
+
+/* 
+   If you want MAVLink on a system that is native big-endian,
+   you need to define NATIVE_BIG_ENDIAN
+*/
+#ifdef NATIVE_BIG_ENDIAN
+# define MAVLINK_NEED_BYTE_SWAP (MAVLINK_ENDIAN == MAVLINK_LITTLE_ENDIAN)
+#else
+# define MAVLINK_NEED_BYTE_SWAP (MAVLINK_ENDIAN != MAVLINK_LITTLE_ENDIAN)
+#endif
+
+#ifndef MAVLINK_STACK_BUFFER
+#define MAVLINK_STACK_BUFFER 0
+#endif
+
+#ifndef MAVLINK_AVOID_GCC_STACK_BUG
+# define MAVLINK_AVOID_GCC_STACK_BUG defined(__GNUC__)
+#endif
+
+#ifndef MAVLINK_ASSERT
+#define MAVLINK_ASSERT(x)
+#endif
+
+#ifndef MAVLINK_START_UART_SEND
+#define MAVLINK_START_UART_SEND(chan, length)
+#endif
+
+#ifndef MAVLINK_END_UART_SEND
+#define MAVLINK_END_UART_SEND(chan, length)
+#endif
+
+/*
+  Opt-in compile-time diagnostics for MAVLink messages and MAV_CMD/enum
+  entries flagged in the XML as work-in-progress, deprecated or superseded.
+  An enum's MAVLINK_ENUM_* macro is applied to its typedef name and to
+  each entry that enum declaration contains; an entry flagged itself also
+  carries its own macro. When an enum is extended in another XML file,
+  each entry carries only the flags of the declaration it came from, and
+  the typedef name carries the flags of every declaration. The generated
+  <ENUM>_ENUM_END marker is never flagged.
+  Limitations: the enum macro goes on the typedef name, not the enum tag,
+  so "enum MAV_FOO x;" is not diagnosed where "MAV_FOO x;" is. Message
+  fields holding enum values are plain integers, so using a flagged enum
+  only through a message field is not diagnosed. A clean build therefore
+  does not prove that no flagged enum is used. Only the C and C++11
+  generators emit these macros.
+  Each macro defaults to a no-op; define it before including mavlink.h to
+  get a diagnostic, and pick the attribute that matches how strict you want
+  that category to be, e.g.:
+
+    // Message macros: use deprecated() (plus -Werror=deprecated-declarations
+    // to make it fatal). error() fires only on calls the compiler does not
+    // inline, so optimised builds usually miss it, and unavailable() breaks
+    // #include under GCC, so neither suits messages.
+    #define MAVLINK_WIP              __attribute__((deprecated("MAVLink WIP message used")))
+    #define MAVLINK_DEPRECATED       __attribute__((deprecated("MAVLink deprecated message used")))
+    #define MAVLINK_SUPERSEDED       // leave undefined/empty: still fully supported
+
+    // unavailable() requires clang or GCC >= 12 (see note below): guard it,
+    // or just use deprecated() unconditionally if you don't need the harder
+    // failure and want to support older GCC too.
+    #if defined(__clang__) || (defined(__GNUC__) && __GNUC__ >= 12)
+    #define MAVLINK_ENUM_WIP         __attribute__((unavailable("MAVLink WIP command/enum entry used")))
+    #else
+    #define MAVLINK_ENUM_WIP         __attribute__((deprecated("MAVLink WIP command/enum entry used")))
+    #endif
+    #define MAVLINK_ENUM_DEPRECATED  __attribute__((deprecated("MAVLink deprecated command/enum entry used")))
+    #define MAVLINK_ENUM_SUPERSEDED  // leave undefined/empty: still fully supported
+
+  Note: warning() is not self-clean (the generated wrappers call each other,
+  so it fires inside the library's own code); prefer deprecated().
+
+  Note: on enum entries only deprecated/unavailable are valid attributes;
+  GCC's function-only warning()/error() cannot be applied to enumerators.
+  The same restriction applies to the C++11 message struct type emitted by
+  the C++11 generator: see MAVLINK_MSG_TYPE_WIP/DEPRECATED/SUPERSEDED in
+  message.hpp, which are a separate, type-only set of macros for that
+  purpose (this MAVLINK_WIP/DEPRECATED/SUPERSEDED set stays function-only
+  and still backs the plain-C helper functions used by C++11 interop
+  builds).
+
+  Note: unavailable() requires clang or GCC >= 12. On an older GCC (e.g.
+  GCC 11 on Ubuntu 22.04, this project's own CI baseline) it is not simply
+  inert: GCC emits "attribute directive ignored" for every entry/type so
+  flagged, at declaration time, independent of -Werror and of whether the
+  flagged entry is ever used - so a -Werror build fails on #include alone,
+  and a non-Werror build gets a diagnostic that never actually fires. The
+  guarded MAVLINK_ENUM_WIP example above (and MAVLINK_MSG_TYPE_WIP in
+  message.hpp) show the pattern the generator's own tests use.
+*/
+#ifndef MAVLINK_WIP
+#define MAVLINK_WIP
+#endif
+#ifndef MAVLINK_DEPRECATED
+#define MAVLINK_DEPRECATED
+#endif
+#ifndef MAVLINK_SUPERSEDED
+#define MAVLINK_SUPERSEDED
+#endif
+#ifndef MAVLINK_ENUM_WIP
+#define MAVLINK_ENUM_WIP
+#endif
+#ifndef MAVLINK_ENUM_DEPRECATED
+#define MAVLINK_ENUM_DEPRECATED
+#endif
+#ifndef MAVLINK_ENUM_SUPERSEDED
+#define MAVLINK_ENUM_SUPERSEDED
+#endif
+
+/*
+  Five call sites below delegate to another wrapper that carries the same
+  attribute: _encode()/_encode_chan()/_encode_status() each call the
+  matching _pack*(), _send_struct() calls _send() (byte-swap/unaligned
+  build only), and _decode() calls each field's _get_<field>() (same
+  build). That internal call must not itself warn/error under
+  MAVLINK_DEPRECATED/MAVLINK_SUPERSEDED (GCC, unlike clang, does not
+  suppress -Wdeprecated-declarations just because the calling function
+  carries the same attribute), so each is wrapped with these two macros.
+  This only silences the diagnostic for that one internal call; a real
+  caller of _pack()/_encode()/_send()/_get_<field>() still gets the
+  diagnostic as normal.
+*/
+// BEGIN pushes the diagnostic state and END pops it, so override both or
+// neither: a default END without its BEGIN pops a state never pushed.
+#if !defined(MAVLINK_DEPRECATED_CALL_BEGIN) && !defined(MAVLINK_DEPRECATED_CALL_END)
+# if defined(__GNUC__) || defined(__clang__)
+#  define MAVLINK_DEPRECATED_CALL_BEGIN \
+    _Pragma("GCC diagnostic push") \
+    _Pragma("GCC diagnostic ignored \"-Wdeprecated-declarations\"")
+#  define MAVLINK_DEPRECATED_CALL_END _Pragma("GCC diagnostic pop")
+# else
+#  define MAVLINK_DEPRECATED_CALL_BEGIN
+#  define MAVLINK_DEPRECATED_CALL_END
+# endif
+#elif !defined(MAVLINK_DEPRECATED_CALL_BEGIN) || !defined(MAVLINK_DEPRECATED_CALL_END)
+# error "define both MAVLINK_DEPRECATED_CALL_BEGIN and MAVLINK_DEPRECATED_CALL_END, or neither"
+#endif
+
+#define MAVLINK_HAVE_GET_TARGET_SYSTEM
+#define MAVLINK_HAVE_GET_TARGET_SYSID
+
+/**
+ * @brief Map a full system target to its legacy uint8_t payload field.
+ * Wide targets use the non-broadcast sentinel; also pass the full target to
+ * the _target() send/finalize helper so it is retained in the header.
+ */
+static inline uint8_t mavlink_msg_target_field(uint32_t target_system)
+{
+    return target_system > UINT8_MAX ? MAVLINK_TARGET_SYSTEM_SENTINEL : (uint8_t)target_system;
+}
+
+/* option to provide alternative implementation of mavlink_helpers.h */
+#ifdef MAVLINK_SEPARATE_HELPERS
+
+    #define MAVLINK_HELPER
+
+    /* decls in sync with those in mavlink_helpers.h */
+    #ifndef MAVLINK_GET_CHANNEL_STATUS
+    MAVLINK_HELPER mavlink_status_t* mavlink_get_channel_status(uint8_t chan);
+    #endif
+    MAVLINK_HELPER void mavlink_reset_channel_status(uint8_t chan);
+    MAVLINK_HELPER uint8_t _mav_header_pack(uint8_t *buf, uint8_t magic, uint8_t len,
+                                            uint8_t incompat_flags, uint8_t compat_flags,
+                                            uint8_t seq, uint32_t sysid, uint8_t compid, uint32_t msgid,
+                                            uint32_t target_sysid);
+    MAVLINK_HELPER uint8_t mavlink_header_to_send_buffer(uint8_t *buf, const mavlink_message_t *msg);
+    MAVLINK_HELPER uint16_t mavlink_finalize_message_buffer_target(mavlink_message_t* msg, uint32_t system_id, uint8_t component_id,
+                                                            mavlink_status_t* status, uint8_t min_length, uint8_t length, uint8_t crc_extra,
+                                                            uint32_t target_sysid);
+    MAVLINK_HELPER uint16_t mavlink_finalize_message_buffer(mavlink_message_t* msg, uint32_t system_id, uint8_t component_id,
+                                                            mavlink_status_t* status, uint8_t min_length, uint8_t length, uint8_t crc_extra);
+    MAVLINK_HELPER uint16_t mavlink_finalize_message_chan_target(mavlink_message_t* msg, uint32_t system_id, uint8_t component_id,
+                                                          uint8_t chan, uint8_t min_length, uint8_t length, uint8_t crc_extra,
+                                                          uint32_t target_sysid);
+    MAVLINK_HELPER uint16_t mavlink_finalize_message_chan(mavlink_message_t* msg, uint32_t system_id, uint8_t component_id,
+                                                          uint8_t chan, uint8_t min_length, uint8_t length, uint8_t crc_extra);
+    MAVLINK_HELPER uint16_t mavlink_finalize_message_target(mavlink_message_t* msg, uint32_t system_id, uint8_t component_id,
+                                                     uint8_t min_length, uint8_t length, uint8_t crc_extra,
+                                                     uint32_t target_sysid);
+    MAVLINK_HELPER uint16_t mavlink_finalize_message(mavlink_message_t* msg, uint32_t system_id, uint8_t component_id,
+                                                     uint8_t min_length, uint8_t length, uint8_t crc_extra);
+    #ifdef MAVLINK_USE_CONVENIENCE_FUNCTIONS
+    MAVLINK_HELPER void _mav_finalize_message_chan_send_target(mavlink_channel_t chan, uint32_t msgid, const char *packet,
+                                                        uint8_t min_length, uint8_t length, uint8_t crc_extra,
+                                                        uint32_t target_sysid);
+    MAVLINK_HELPER void _mav_finalize_message_chan_send(mavlink_channel_t chan, uint32_t msgid, const char *packet,
+                                                        uint8_t min_length, uint8_t length, uint8_t crc_extra);
+    #endif
+    MAVLINK_HELPER uint16_t mavlink_msg_to_send_buffer(uint8_t *buffer, const mavlink_message_t *msg);
+    MAVLINK_HELPER void mavlink_msg_decode_target(const mavlink_message_t *msg, void *payload, uint8_t length, uint8_t target_system_ofs);
+    MAVLINK_HELPER bool mavlink_msg_get_target_system(const mavlink_message_t *msg, const uint8_t *target_system_ptr, uint32_t *target_system);
+    MAVLINK_HELPER uint32_t mavlink_msg_get_target_sysid(const mavlink_message_t *msg, const mavlink_msg_entry_t *entry);
+    MAVLINK_HELPER uint8_t mavlink_msg_get_target_compid(const mavlink_message_t *msg, const mavlink_msg_entry_t *entry);
+    MAVLINK_HELPER void mavlink_start_checksum(mavlink_message_t* msg);
+    MAVLINK_HELPER void mavlink_update_checksum(mavlink_message_t* msg, uint8_t c);
+    MAVLINK_HELPER uint8_t mavlink_frame_char_buffer(mavlink_message_t* rxmsg, 
+						     mavlink_status_t* status,
+						     uint8_t c, 
+						     mavlink_message_t* r_message, 
+						     mavlink_status_t* r_mavlink_status);
+    MAVLINK_HELPER uint8_t mavlink_frame_char(uint8_t chan, uint8_t c, mavlink_message_t* r_message, mavlink_status_t* r_mavlink_status);
+    MAVLINK_HELPER uint8_t mavlink_parse_char_buffer(mavlink_message_t* rxmsg,
+						     mavlink_status_t* status,
+						     uint8_t c,
+                                                     mavlink_message_t* r_message,
+                                                     mavlink_status_t* r_mavlink_status);
+    MAVLINK_HELPER uint8_t mavlink_parse_char(uint8_t chan, uint8_t c, mavlink_message_t* r_message, mavlink_status_t* r_mavlink_status);
+    MAVLINK_HELPER const mavlink_msg_entry_t *mavlink_get_msg_entry(uint32_t msgid);
+    #ifdef MAVLINK_USE_CONVENIENCE_FUNCTIONS
+    MAVLINK_HELPER void _mavlink_send_uart(mavlink_channel_t chan, const char *buf, uint16_t len);
+    MAVLINK_HELPER void _mavlink_resend_uart(mavlink_channel_t chan, const mavlink_message_t *msg);
+    #endif
+
+#else
+
+    #define MAVLINK_HELPER static inline
+    #include "mavlink_helpers.h"
+
+#endif // MAVLINK_SEPARATE_HELPERS
+
+
+/**
+ * @brief Get the required buffer size for this message
+ */
+static inline uint16_t mavlink_msg_get_send_buffer_length(const mavlink_message_t* msg)
+{
+	if (msg->magic == MAVLINK_STX_MAVLINK1) {
+		return msg->len + MAVLINK_CORE_HEADER_MAVLINK1_LEN+1 + 2;
+	}
+    	uint16_t signature_len = (msg->incompat_flags & MAVLINK_IFLAG_SIGNED)?MAVLINK_SIGNATURE_BLOCK_LEN:0;
+	uint16_t ext_header_len = 0;
+	if (msg->incompat_flags & MAVLINK_IFLAG_SYSID32) {
+		ext_header_len += MAVLINK_SYSID32_HEADER_EXTRA;
+	}
+	if (msg->incompat_flags & MAVLINK_IFLAG_TARGET32) {
+		ext_header_len += MAVLINK_TARGET32_HEADER_EXTRA;
+	}
+	return msg->len + MAVLINK_NUM_NON_PAYLOAD_BYTES + ext_header_len + signature_len;
+}
+
+#if MAVLINK_NEED_BYTE_SWAP
+static inline void byte_swap_2(char *dst, const char *src)
+{
+	dst[0] = src[1];
+	dst[1] = src[0];
+}
+static inline void byte_swap_4(char *dst, const char *src)
+{
+	dst[0] = src[3];
+	dst[1] = src[2];
+	dst[2] = src[1];
+	dst[3] = src[0];
+}
+static inline void byte_swap_8(char *dst, const char *src)
+{
+	dst[0] = src[7];
+	dst[1] = src[6];
+	dst[2] = src[5];
+	dst[3] = src[4];
+	dst[4] = src[3];
+	dst[5] = src[2];
+	dst[6] = src[1];
+	dst[7] = src[0];
+}
+#elif !MAVLINK_ALIGNED_FIELDS
+static inline void byte_copy_2(char *dst, const char *src)
+{
+	dst[0] = src[0];
+	dst[1] = src[1];
+}
+static inline void byte_copy_4(char *dst, const char *src)
+{
+	dst[0] = src[0];
+	dst[1] = src[1];
+	dst[2] = src[2];
+	dst[3] = src[3];
+}
+static inline void byte_copy_8(char *dst, const char *src)
+{
+	memcpy(dst, src, 8);
+}
+#endif
+
+#define _mav_put_uint8_t(buf, wire_offset, b) buf[wire_offset] = (uint8_t)b
+#define _mav_put_int8_t(buf, wire_offset, b)  buf[wire_offset] = (int8_t)b
+#define _mav_put_char(buf, wire_offset, b)    buf[wire_offset] = b
+
+#if MAVLINK_NEED_BYTE_SWAP
+#define _mav_put_uint16_t(buf, wire_offset, b) byte_swap_2(&buf[wire_offset], (const char *)&b)
+#define _mav_put_int16_t(buf, wire_offset, b)  byte_swap_2(&buf[wire_offset], (const char *)&b)
+#define _mav_put_uint32_t(buf, wire_offset, b) byte_swap_4(&buf[wire_offset], (const char *)&b)
+#define _mav_put_int32_t(buf, wire_offset, b)  byte_swap_4(&buf[wire_offset], (const char *)&b)
+#define _mav_put_uint64_t(buf, wire_offset, b) byte_swap_8(&buf[wire_offset], (const char *)&b)
+#define _mav_put_int64_t(buf, wire_offset, b)  byte_swap_8(&buf[wire_offset], (const char *)&b)
+#define _mav_put_float(buf, wire_offset, b)    byte_swap_4(&buf[wire_offset], (const char *)&b)
+#define _mav_put_double(buf, wire_offset, b)   byte_swap_8(&buf[wire_offset], (const char *)&b)
+#elif !MAVLINK_ALIGNED_FIELDS
+#define _mav_put_uint16_t(buf, wire_offset, b) byte_copy_2(&buf[wire_offset], (const char *)&b)
+#define _mav_put_int16_t(buf, wire_offset, b)  byte_copy_2(&buf[wire_offset], (const char *)&b)
+#define _mav_put_uint32_t(buf, wire_offset, b) byte_copy_4(&buf[wire_offset], (const char *)&b)
+#define _mav_put_int32_t(buf, wire_offset, b)  byte_copy_4(&buf[wire_offset], (const char *)&b)
+#define _mav_put_uint64_t(buf, wire_offset, b) byte_copy_8(&buf[wire_offset], (const char *)&b)
+#define _mav_put_int64_t(buf, wire_offset, b)  byte_copy_8(&buf[wire_offset], (const char *)&b)
+#define _mav_put_float(buf, wire_offset, b)    byte_copy_4(&buf[wire_offset], (const char *)&b)
+#define _mav_put_double(buf, wire_offset, b)   byte_copy_8(&buf[wire_offset], (const char *)&b)
+#else
+#define _mav_put_uint16_t(buf, wire_offset, b) *(uint16_t *)&buf[wire_offset] = b
+#define _mav_put_int16_t(buf, wire_offset, b)  *(int16_t *)&buf[wire_offset] = b
+#define _mav_put_uint32_t(buf, wire_offset, b) *(uint32_t *)&buf[wire_offset] = b
+#define _mav_put_int32_t(buf, wire_offset, b)  *(int32_t *)&buf[wire_offset] = b
+#define _mav_put_uint64_t(buf, wire_offset, b) *(uint64_t *)&buf[wire_offset] = b
+#define _mav_put_int64_t(buf, wire_offset, b)  *(int64_t *)&buf[wire_offset] = b
+#define _mav_put_float(buf, wire_offset, b)    *(float *)&buf[wire_offset] = b
+#define _mav_put_double(buf, wire_offset, b)   *(double *)&buf[wire_offset] = b
+#endif
+
+/*
+  like memcpy(), but if src is NULL, do a memset to zero
+*/
+static inline void mav_array_memcpy(void *dest, const void *src, size_t n)
+{
+    // It would be tempting to do a strcpy/strncpy for the char[] type. Unfortunately, some
+    // existing MAVLink messages such as PARAM_EXT_VALUE.param_value use the char[] type for
+    // arbitrary data (including null), and would break.
+    //
+    // It would be nice to change such char[] types to uint8_t[] but that would change the
+    // CRC_EXTRA.
+
+	if (src == NULL) {
+		memset(dest, 0, n);
+	} else {
+		memcpy(dest, src, n);
+	}
+}
+
+/*
+ * Place a char array into a buffer
+ */
+static inline void _mav_put_char_array(char *buf, uint8_t wire_offset, const char *b, uint8_t array_length)
+{
+	mav_array_memcpy(&buf[wire_offset], b, array_length);
+
+}
+
+/*
+ * Place a uint8_t array into a buffer
+ */
+static inline void _mav_put_uint8_t_array(char *buf, uint8_t wire_offset, const uint8_t *b, uint8_t array_length)
+{
+	mav_array_memcpy(&buf[wire_offset], b, array_length);
+
+}
+
+/*
+ * Place a int8_t array into a buffer
+ */
+static inline void _mav_put_int8_t_array(char *buf, uint8_t wire_offset, const int8_t *b, uint8_t array_length)
+{
+	mav_array_memcpy(&buf[wire_offset], b, array_length);
+
+}
+
+#if MAVLINK_NEED_BYTE_SWAP
+#define _MAV_PUT_ARRAY(TYPE, V) \
+static inline void _mav_put_ ## TYPE ##_array(char *buf, uint8_t wire_offset, const TYPE *b, uint8_t array_length) \
+{ \
+	if (b == NULL) { \
+		memset(&buf[wire_offset], 0, array_length*sizeof(TYPE)); \
+	} else { \
+		uint16_t i; \
+		for (i=0; i<array_length; i++) { \
+			_mav_put_## TYPE (buf, wire_offset+(i*sizeof(TYPE)), b[i]); \
+		} \
+	} \
+}
+#else
+#define _MAV_PUT_ARRAY(TYPE, V)					\
+static inline void _mav_put_ ## TYPE ##_array(char *buf, uint8_t wire_offset, const TYPE *b, uint8_t array_length) \
+{ \
+	mav_array_memcpy(&buf[wire_offset], b, array_length*sizeof(TYPE)); \
+}
+#endif
+
+_MAV_PUT_ARRAY(uint16_t, u16)
+_MAV_PUT_ARRAY(uint32_t, u32)
+_MAV_PUT_ARRAY(uint64_t, u64)
+_MAV_PUT_ARRAY(int16_t,  i16)
+_MAV_PUT_ARRAY(int32_t,  i32)
+_MAV_PUT_ARRAY(int64_t,  i64)
+_MAV_PUT_ARRAY(float,    f)
+_MAV_PUT_ARRAY(double,   d)
+
+#define _MAV_RETURN_char(msg, wire_offset)             (char)_MAV_PAYLOAD(msg)[wire_offset]
+#define _MAV_RETURN_int8_t(msg, wire_offset)   (int8_t)_MAV_PAYLOAD(msg)[wire_offset]
+#define _MAV_RETURN_uint8_t(msg, wire_offset) (uint8_t)_MAV_PAYLOAD(msg)[wire_offset]
+
+#if MAVLINK_NEED_BYTE_SWAP
+#define _MAV_MSG_RETURN_TYPE(TYPE, SIZE) \
+static inline TYPE _MAV_RETURN_## TYPE(const mavlink_message_t *msg, uint8_t ofs) \
+{ TYPE r; byte_swap_## SIZE((char*)&r, &_MAV_PAYLOAD(msg)[ofs]); return r; }
+
+_MAV_MSG_RETURN_TYPE(uint16_t, 2)
+_MAV_MSG_RETURN_TYPE(int16_t,  2)
+_MAV_MSG_RETURN_TYPE(uint32_t, 4)
+_MAV_MSG_RETURN_TYPE(int32_t,  4)
+_MAV_MSG_RETURN_TYPE(uint64_t, 8)
+_MAV_MSG_RETURN_TYPE(int64_t,  8)
+_MAV_MSG_RETURN_TYPE(float,    4)
+_MAV_MSG_RETURN_TYPE(double,   8)
+
+#elif !MAVLINK_ALIGNED_FIELDS
+#define _MAV_MSG_RETURN_TYPE(TYPE, SIZE) \
+static inline TYPE _MAV_RETURN_## TYPE(const mavlink_message_t *msg, uint8_t ofs) \
+{ TYPE r; byte_copy_## SIZE((char*)&r, &_MAV_PAYLOAD(msg)[ofs]); return r; }
+
+_MAV_MSG_RETURN_TYPE(uint16_t, 2)
+_MAV_MSG_RETURN_TYPE(int16_t,  2)
+_MAV_MSG_RETURN_TYPE(uint32_t, 4)
+_MAV_MSG_RETURN_TYPE(int32_t,  4)
+_MAV_MSG_RETURN_TYPE(uint64_t, 8)
+_MAV_MSG_RETURN_TYPE(int64_t,  8)
+_MAV_MSG_RETURN_TYPE(float,    4)
+_MAV_MSG_RETURN_TYPE(double,   8)
+#else // native byte order; the packed message payload may still be unaligned
+#define _MAV_MSG_RETURN_TYPE(TYPE) \
+static inline TYPE _MAV_RETURN_## TYPE(const mavlink_message_t *msg, uint8_t ofs) \
+{ TYPE r; memcpy(&r, &_MAV_PAYLOAD(msg)[ofs], sizeof(TYPE)); return r; }
+
+_MAV_MSG_RETURN_TYPE(uint16_t)
+_MAV_MSG_RETURN_TYPE(int16_t)
+_MAV_MSG_RETURN_TYPE(uint32_t)
+_MAV_MSG_RETURN_TYPE(int32_t)
+_MAV_MSG_RETURN_TYPE(uint64_t)
+_MAV_MSG_RETURN_TYPE(int64_t)
+_MAV_MSG_RETURN_TYPE(float)
+_MAV_MSG_RETURN_TYPE(double)
+#endif // MAVLINK_NEED_BYTE_SWAP
+
+static inline uint16_t _MAV_RETURN_char_array(const mavlink_message_t *msg, char *value, 
+						     uint8_t array_length, uint8_t wire_offset)
+{
+	memcpy(value, &_MAV_PAYLOAD(msg)[wire_offset], array_length);
+	return array_length;
+}
+
+static inline uint16_t _MAV_RETURN_uint8_t_array(const mavlink_message_t *msg, uint8_t *value, 
+							uint8_t array_length, uint8_t wire_offset)
+{
+	memcpy(value, &_MAV_PAYLOAD(msg)[wire_offset], array_length);
+	return array_length;
+}
+
+static inline uint16_t _MAV_RETURN_int8_t_array(const mavlink_message_t *msg, int8_t *value, 
+						       uint8_t array_length, uint8_t wire_offset)
+{
+	memcpy(value, &_MAV_PAYLOAD(msg)[wire_offset], array_length);
+	return array_length;
+}
+
+#if MAVLINK_NEED_BYTE_SWAP
+#define _MAV_RETURN_ARRAY(TYPE, V) \
+static inline uint16_t _MAV_RETURN_## TYPE ##_array(const mavlink_message_t *msg, TYPE *value, \
+							 uint8_t array_length, uint8_t wire_offset) \
+{ \
+	uint16_t i; \
+	for (i=0; i<array_length; i++) { \
+		value[i] = _MAV_RETURN_## TYPE (msg, wire_offset+(i*sizeof(value[0]))); \
+	} \
+	return array_length*sizeof(value[0]); \
+}
+#else
+#define _MAV_RETURN_ARRAY(TYPE, V)					\
+static inline uint16_t _MAV_RETURN_## TYPE ##_array(const mavlink_message_t *msg, TYPE *value, \
+							 uint8_t array_length, uint8_t wire_offset) \
+{ \
+	memcpy(value, &_MAV_PAYLOAD(msg)[wire_offset], array_length*sizeof(TYPE)); \
+	return array_length*sizeof(TYPE); \
+}
+#endif
+
+_MAV_RETURN_ARRAY(uint16_t, u16)
+_MAV_RETURN_ARRAY(uint32_t, u32)
+_MAV_RETURN_ARRAY(uint64_t, u64)
+_MAV_RETURN_ARRAY(int16_t,  i16)
+_MAV_RETURN_ARRAY(int32_t,  i32)
+_MAV_RETURN_ARRAY(int64_t,  i64)
+_MAV_RETURN_ARRAY(float,    f)
+_MAV_RETURN_ARRAY(double,   d)

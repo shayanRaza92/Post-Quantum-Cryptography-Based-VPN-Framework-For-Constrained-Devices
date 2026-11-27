@@ -1,0 +1,6 @@
+# Measured 2026-11-28 with tools-equivalent builds (FOOTPRINT_BUILD=1, same compiler/flags as tools/flash_footprint.sh),
+# current firmware (includes Step 5 code, so the baseline is larger than in flash_footprint.csv).
+variant,flash_bytes,flash_added_bytes
+none (harness only),419120,0
+MLDSA44 only,433584,14464
+MLDSA44 + MLDSA65 + MLDSA87,445496,26376

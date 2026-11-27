@@ -1,0 +1,23 @@
+{
+  "date": "2026-11-28T00:40:22",
+  "iface": "wlo1",
+  "drone_ip": "10.60.60.39",
+  "drone_id": "drone-01",
+  "runs": 100,
+  "styles": [
+    "tunnel",
+    "v2ext"
+  ],
+  "base_sizes": [
+    64,
+    1024
+  ],
+  "udp_max_one_packet": 1472,
+  "mav_payload": 255,
+  "gcs_wifi_power_save": "off",
+  "seconds": 753.5,
+  "pymavlink": "2.4.50",
+  "mavlink_packets_parsed": 36537,
+  "mavlink_bad_packets": 0,
+  "git_commit": "b19fb73ce2c7d7d9828d5aa8e2734f6161478269"
+}

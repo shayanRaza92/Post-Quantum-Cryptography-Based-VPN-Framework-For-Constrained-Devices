@@ -141,7 +141,8 @@ The tables are in `results/e2/payload_bench_<date>_<time>/results.md` and the fi
 The ESP32 plays the drone, the laptop the ground station. The ground station sends a random challenge; the drone signs `[challenge, drone id, clock, data]` and sends it back; the ground station checks the signature. This is done for every algorithm, for growing amounts of data, in two link styles:
 
 * **udp**: the whole signed message as one UDP datagram. If it is bigger than one Wi-Fi packet (1,500 bytes), the network splits it into several packets.
-* **mav**: the message cut into MAVLink-sized frames of at most 255 bytes, like a drone radio link.
+* **mav**: the message cut into MAVLink-sized frames of at most 255 bytes, like a drone radio link (emulated: our own frame header).
+* **tunnel** and **v2ext**: the message sent as **real MAVLink 2 packets**, `TUNNEL` (id 385, 128-byte payload) or `V2_EXTENSION` (id 248, 249-byte payload), built on the ESP32 with the official MAVLink C library (`firmware/sig_bench_unified/src/mavlink/`) and read on the laptop with the official parser `pymavlink`, which also checks every packet's checksum. A 5-byte header inside each packet (message number, piece number, piece count, length) lets the ground station put the pieces back together.
 
 Wireshark (`dumpcap`) records every packet. From the capture we measure, for each algorithm: packets per signed message, bytes on the wire, the time from challenge to verified signature, losses, and **the largest data that still fits in one packet with the signature**.
 
@@ -150,6 +151,12 @@ Wireshark (`dumpcap`) records every packet. From the capture we measure, for eac
 2. Terminal 1: `python3 tools/capture_serial.py --port /dev/ttyUSB0 --experiment e3` (starts the drone with `W` and saves its messages). Wait until it shows `META,drone_ip`.
 3. Terminal 2: `python3 tools/gcs_link_test.py --iface wlo1` (the ground station; it starts the Wireshark capture itself).
 4. When both are done: `python3 tools/analyze_link.py results/e3/raw/link_<date>_<time>`
+
+**Real MAVLink 2 run (about 15 minutes, after the steps above have been done once):**
+1. Once: `python3 -m venv --system-site-packages tools/.venv && tools/.venv/bin/pip install pymavlink`
+2. Upload and start the drone as in steps 1-2 above.
+3. Terminal 2: `tools/.venv/bin/python tools/gcs_link_test.py --iface wlo1 --runs 100 --styles tunnel,v2ext --sizes 64,1024`
+4. `python3 tools/analyze_link.py results/e3/raw/link_<date>_<time>` (adds a radio table calculated from the real MAVLink packet bytes)
 
 To look at the packets in Wireshark with readable names: `wireshark -X lua_script:tools/wireshark/drone_auth.lua results/e3/raw/link_<date>_<time>/capture.pcapng`
 

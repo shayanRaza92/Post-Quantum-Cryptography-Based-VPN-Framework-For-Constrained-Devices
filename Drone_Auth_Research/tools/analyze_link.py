@@ -15,8 +15,11 @@ results/e3/<run name>/:
 
 "Packets" are IP packets seen by Wireshark. In style "udp" a large message is one UDP datagram
 that the IP layer splits into several packets; in style "mav" every MAVLink-sized frame is its
-own UDP datagram. "Bytes on the wire" are IP bytes (IP + UDP headers + payload), without the
-Wi-Fi radio framing. The capture file is read directly, so tshark is not needed.
+own UDP datagram; in styles "tunnel" and "v2ext" every real MAVLink 2 packet (TUNNEL or
+V2_EXTENSION) is its own UDP datagram. "Bytes on the wire" are IP bytes (IP + UDP headers +
+payload), without the Wi-Fi radio framing; for the real MAVLink styles the MAVLink bytes (the UDP
+payloads, i.e. exactly what a serial radio would carry) are counted too. The capture file is read
+directly, so tshark is not needed.
 """
 import csv
 import json
@@ -30,6 +33,10 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 ORDER = ["Ed25519", "ECDSA-P256", "RSA-3072", "ML-DSA-44", "ML-DSA-65", "ML-DSA-87"]
 CHALLENGE, AUTH, RESULT = 4, 5, 6
+STYLE_ORDER = ["udp", "mav", "tunnel", "v2ext"]
+STYLE_TITLE = {"udp": "Wi-Fi UDP", "mav": "MAVLink-sized frames (emulated)",
+               "tunnel": "Real MAVLink 2 TUNNEL packets", "v2ext": "Real MAVLink 2 V2_EXTENSION packets"}
+MAVLINK_IDS = {385: "TUNNEL", 248: "V2_EXTENSION"}
 
 
 # ---- minimal pcapng reader (Ethernet, Linux cooked v1/v2, raw IP) ------------------------
@@ -104,7 +111,7 @@ def udp_datagrams(packets):
 def messages_from_capture(datagrams):
     """Per sequence number: the AUTH message (packets, bytes, times), the CHALLENGE and RESULT."""
     auth = defaultdict(lambda: {"datagrams": 0, "packets": 0, "ip_bytes": 0, "t_first": None, "t_last": None,
-                                "incomplete": 0})
+                                "incomplete": 0, "mavlink_bytes": 0})
     other = defaultdict(dict)
     for g in datagrams:
         p = g["payload"]
@@ -112,6 +119,11 @@ def messages_from_capture(datagrams):
             mtype, seq = p[3], int.from_bytes(p[6:8], "big")
         elif p[:2] == b"DF" and len(p) >= 10:
             mtype, seq = p[2], int.from_bytes(p[4:6], "big")
+        elif p[:1] == b"\xfd" and len(p) >= 17 and (p[7] | p[8] << 8 | p[9] << 16) in MAVLINK_IDS:
+            # real MAVLink 2 packet: 10-byte header, then the payload; TUNNEL and V2_EXTENSION both have
+            # 5 bytes of fields before their payload array, where our fragment header (sequence first) starts
+            mtype, seq = AUTH, int.from_bytes(p[15:17], "big")
+            auth[seq]["mavlink_bytes"] += g["udp_len"] - 8
         else:
             continue
         if mtype == AUTH:
@@ -238,6 +250,7 @@ def main():
                "drone_total_ms": f("drone_total_ms"), "drone_send_waits": f("drone_send_waits"),
                "packets": c["packets"] if c else float("nan"), "datagrams": c["datagrams"] if c else float("nan"),
                "auth_ip_bytes": c["ip_bytes"] if c else float("nan"),
+               "mavlink_bytes": c["mavlink_bytes"] if c and c["mavlink_bytes"] else float("nan"),
                "exchange_ip_bytes": (c["ip_bytes"] + (ch["ip_bytes"] if ch else 0) + (rs["ip_bytes"] if rs else 0))
                if c else float("nan"),
                "transfer_ms": (c["t_last"] - c["t_first"]) * 1000 if c else float("nan"),
@@ -255,7 +268,8 @@ def main():
     for p in per:
         groups[(p["algorithm"], p["style"], p["data_len"])].append(p)
     summary = []
-    for (a, st, dl), ps in sorted(groups.items(), key=lambda kv: (ORDER.index(kv[0][0]), kv[0][1], kv[0][2])):
+    for (a, st, dl), ps in sorted(groups.items(), key=lambda kv: (ORDER.index(kv[0][0]), STYLE_ORDER.index(kv[0][1]),
+                                                                    kv[0][2])):
         ok = [p for p in ps if not p["lost"]]
         val = lambda k: [p[k] for p in ok if p[k] == p[k]]
         sig = [int(p["sig_len"]) for p in ok if p["sig_len"]]
@@ -266,6 +280,7 @@ def main():
             "packets_median": float(np.median(val("packets"))) if val("packets") else float("nan"),
             "packets_max": max(val("packets")) if val("packets") else float("nan"),
             "auth_ip_bytes_median": float(np.median(val("auth_ip_bytes"))) if val("auth_ip_bytes") else float("nan"),
+            "mavlink_bytes_median": float(np.median(val("mavlink_bytes"))) if val("mavlink_bytes") else float("nan"),
             "exchange_ip_bytes_median": float(np.median(val("exchange_ip_bytes"))) if val("exchange_ip_bytes") else float("nan"),
             "signature_share_percent": 100 * (max(sig) if sig else 0) / float(np.median(val("auth_ip_bytes")))
             if val("auth_ip_bytes") and sig else float("nan"),
@@ -289,7 +304,7 @@ def main():
     # ---- largest data that still went in ONE packet (measured)
     one = []
     for a in ORDER:
-        for st in ("udp", "mav"):
+        for st in STYLE_ORDER:
             rows = [s for s in summary if s["algorithm"] == a and s["style"] == st]
             if not rows:
                 continue
@@ -302,7 +317,7 @@ def main():
         w.writeheader()
         w.writerows(one)
 
-    if auth:
+    if auth and any(s["style"] == "udp" for s in summary):
         figures(summary, out / "figures")
 
     # ---- readable tables
@@ -312,13 +327,18 @@ def main():
          f"{meta.get('runs')} authentications per algorithm, style and size. Git commit `{meta.get('git_commit', '?')[:12]}`. "
          f"Ground station Wi-Fi power saving: {meta.get('gcs_wifi_power_save', 'not recorded')}.\n",
          "Styles: **udp** = one UDP datagram per message (split by the IP layer into 1,500-byte packets); "
-         "**mav** = MAVLink-sized frames of at most 255 payload bytes, one UDP datagram each.\n"]
+         "**mav** = MAVLink-sized frames of at most 255 payload bytes, one UDP datagram each (emulated); "
+         "**tunnel** / **v2ext** = real MAVLink 2 TUNNEL / V2_EXTENSION packets from the official C library, "
+         "parsed and CRC-checked by pymavlink, one UDP datagram each.\n"]
+    if meta.get("pymavlink"):
+        L.append(f"pymavlink {meta['pymavlink']}: {meta.get('mavlink_packets_parsed')} MAVLink packets parsed, "
+                 f"{meta.get('mavlink_bad_packets')} rejected (bad CRC or malformed).\n")
     if not auth:
         L.append("**No capture found: packet counts and bytes are missing.**\n")
     L += ["\n## Largest data that still fitted in ONE packet (measured)\n",
           "| Algorithm | Wi-Fi UDP: one packet up to | first size that needed 2+ | MAVLink-sized: one frame up to | first size that needed 2+ |",
           "|---|---:|---:|---:|---:|"]
-    for a in ORDER:
+    for a in ORDER if any(o["style"] in ("udp", "mav") for o in one) else []:
         u = next((o for o in one if o["algorithm"] == a and o["style"] == "udp"), None)
         m = next((o for o in one if o["algorithm"] == a and o["style"] == "mav"), None)
         if u or m:
@@ -326,7 +346,8 @@ def main():
             L.append(f"| {a} | {c(u, 'largest_tested_one_packet_B')} | {c(u, 'smallest_tested_split_B')} | "
                      f"{c(m, 'largest_tested_one_packet_B')} | {c(m, 'smallest_tested_split_B')} |")
     L.append("\n'none' = even the smallest message (64 bytes of data) needed more than one packet.")
-    for st, title in (("udp", "Wi-Fi UDP"), ("mav", "MAVLink-sized frames")):
+    for st in [x for x in STYLE_ORDER if any(s["style"] == x for s in summary)]:
+        title = STYLE_TITLE[st]
         L += [f"\n## {title}: every algorithm and data size (medians)\n",
               "| Algorithm | Data (B) | Packets | Bytes on wire (auth msg) | Signature share | Challenge to verified (ms) | 95% CI of the median (ms) | p95 (ms) | Drone signing (ms) | Network + ground station (ms) | Transfer of the message (ms) | Lost |",
               "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
@@ -356,6 +377,19 @@ def main():
                 signed = byts + int(s_["packets_median"]) * MAVLINK2_SIGNATURE
                 L.append(f"| {s_['algorithm']} | {s_['data_len']:,} | {int(s_['packets_median'])} | {byts:,} | "
                          f"{byts * BITS_PER_BYTE * 1000 / RADIO_BPS:,.0f} | {signed * BITS_PER_BYTE * 1000 / RADIO_BPS:,.0f} |")
+    real = [s_ for s_ in summary if s_["style"] in ("tunnel", "v2ext") and s_["mavlink_bytes_median"] == s_["mavlink_bytes_median"]]
+    if real:
+        L += ["\n## Real MAVLink 2 packets on a 57,600-baud telemetry radio (calculated from the MEASURED packet bytes)\n",
+              "Bytes = the MAVLink 2 packets exactly as captured (header, payload after MAVLink 2's trailing-zero "
+              "truncation, checksum; no IP/UDP). Time = bytes x 10 / 57,600. Last column: MAVLink 2 signing on "
+              "(13 more bytes per packet).\n",
+              "| Style | Algorithm | Data (B) | Packets | MAVLink bytes | Time on the radio (ms) | With MAVLink signing (ms) |",
+              "|---|---|---:|---:|---:|---:|---:|"]
+        for s_ in real:
+            byts, pk = s_["mavlink_bytes_median"], s_["packets_median"]
+            L.append(f"| {s_['style']} | {s_['algorithm']} | {s_['data_len']:,} | {pk:.0f} | {byts:,.0f} | "
+                     f"{byts * BITS_PER_BYTE * 1000 / RADIO_BPS:,.0f} | "
+                     f"{(byts + pk * MAVLINK2_SIGNATURE) * BITS_PER_BYTE * 1000 / RADIO_BPS:,.0f} |")
     total = len(per)
     lost = sum(p["lost"] for p in per)
     verified = sum(p["verified"] for p in per)

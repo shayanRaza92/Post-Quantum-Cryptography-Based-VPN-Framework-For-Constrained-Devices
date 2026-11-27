@@ -96,7 +96,7 @@ def fig8():
                      "    Ed25519 9.4 ms · ML-DSA-44 55 ms (up to 486 ms) · RSA 373 ms",
            width=4.15, side="right")
     d.arrow(D, G, -3.72, "3  AUTH = M | sig", "64 B of data:  Ed25519 168 B in 1 packet  ·  ML-DSA-44 2,544 B in "
-            "2 Wi-Fi packets\n(10 frames if each frame carries at most 255 B, like MAVLink)", color=ORANGE)
+            "2 Wi-Fi packets\n(11 real MAVLink 2 V2_EXTENSION packets, or 21 TUNNEL packets)", color=ORANGE)
     d.note(G, -4.18, "4  Check: challenge is the one sent\n    Verify(public key, M, sig): under 1.2 ms (laptop)",
            width=3.05, side="left")
     d.arrow(G, D, -4.85, "5  RESULT", "accepted / rejected (41 B)", color=BLUE)
@@ -107,14 +107,15 @@ def fig8():
 
 
 def fig9():
-    """Two real exchanges side by side (MAVLink-sized frames, 64 B of data), not to scale."""
+    """Two real exchanges side by side: real MAVLink 2 V2_EXTENSION packets, 64 B of data, not to scale.
+    Median examples from the 100-run real-MAVLink run link_20261128_004020 (seq 249 and 1829)."""
     fig, axes = plt.subplots(1, 2, figsize=(7.0, 3.3))
-    cases = [("Ed25519", [("0.00 ms", "CHALLENGE", "G"), ("18.91 ms", "AUTH  frame 1/1  (140 B)", "D"),
-                          ("19.98 ms", "RESULT", "G")], "1 frame, 152 B on a radio:\n26 ms at 57,600 baud"),
-             ("ML-DSA-44", [("0.00 ms", "CHALLENGE", "G"), ("44.51 ms", "AUTH  frame 1/10  (255 B)", "D"),
-                            ("", "frame 2/10", "D"), ("", "frame 3/10", "D"), ("", "...", "dots"),
-                            ("", "frame 9/10", "D"), ("44.87 ms", "AUTH  frame 10/10  (201 B)", "D"),
-                            ("45.71 ms", "RESULT", "G")], "10 frames, 2,616 B on a radio:\n454 ms at 57,600 baud")]
+    cases = [("Ed25519", [("0.00 ms", "CHALLENGE", "G"), ("18.03 ms", "AUTH: V2_EXTENSION (162 B)", "D"),
+                          ("18.27 ms", "RESULT", "G")], "1 MAVLink 2 packet, 162 B:\n28 ms at 57,600 baud"),
+             ("ML-DSA-44", [("0.00 ms", "CHALLENGE", "G"), ("62.43 ms", "AUTH 1/11 (266 B)", "D"),
+                            ("", "packet 2/11", "D"), ("", "packet 3/11", "D"), ("", "...", "dots"),
+                            ("", "packet 10/11", "D"), ("65.19 ms", "AUTH 11/11 (78 B)", "D"),
+                            ("65.40 ms", "RESULT", "G")], "11 MAVLink 2 packets, 2,738 B:\n475 ms at 57,600 baud")]
     for ax, (alg, events, footer) in zip(axes, cases):
         ax.set_xlim(0, 3.6)
         ax.set_ylim(-3.35, 0.4)
@@ -139,8 +140,8 @@ def fig9():
                     ax.text(0.12, y, t, ha="left", va="center", fontsize=6, color=INK2)
             y -= step
         ax.text((xd + xg) / 2, -3.15, footer, ha="center", va="center", fontsize=6.8, color=INK, linespacing=1.3)
-    fig.text(0.5, 0.005, "Times: from the Step 3 Wireshark recording (challenge leaving the ground station = 0).\n"
-             "Radio times: calculated from the measured sizes (MAVLink 2 framing, 10 bits per byte).", linespacing=1.4, ha="center", va="bottom", fontsize=6.3, color=INK2)
+    fig.text(0.5, 0.005, "Real MAVLink 2 packets (official C library), times from the Wireshark recording (challenge leaving "
+             "the ground station = 0).\nRadio times: calculated from the captured MAVLink 2 packet bytes (10 bits per byte).", linespacing=1.4, ha="center", va="bottom", fontsize=6.3, color=INK2)
     OUT.mkdir(parents=True, exist_ok=True)
     fig.savefig(OUT / "fig9_seq_packets.pdf")
     fig.savefig(OUT / "fig9_seq_packets.png")

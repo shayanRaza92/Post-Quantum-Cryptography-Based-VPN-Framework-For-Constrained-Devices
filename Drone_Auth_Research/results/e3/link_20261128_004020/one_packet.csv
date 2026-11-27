@@ -1,0 +1,13 @@
+algorithm,style,largest_tested_one_packet_B,smallest_tested_split_B
+Ed25519,tunnel,0,64
+Ed25519,v2ext,168,169
+ECDSA-P256,tunnel,0,64
+ECDSA-P256,v2ext,160,161
+RSA-3072,tunnel,0,64
+RSA-3072,v2ext,0,64
+ML-DSA-44,tunnel,0,64
+ML-DSA-44,v2ext,0,64
+ML-DSA-65,tunnel,0,64
+ML-DSA-65,v2ext,0,64
+ML-DSA-87,tunnel,0,64
+ML-DSA-87,v2ext,0,64
