@@ -1,0 +1,23 @@
+{
+  "date": "2026-11-27T23:18:27",
+  "iface": "wlo1",
+  "drone_ip": "10.60.60.39",
+  "drone_id": "drone-01",
+  "runs": 100,
+  "styles": [
+    "udp",
+    "mav"
+  ],
+  "base_sizes": [
+    64,
+    256,
+    1024,
+    4096,
+    8192
+  ],
+  "udp_max_one_packet": 1472,
+  "mav_payload": 255,
+  "gcs_wifi_power_save": "off",
+  "seconds": 1696.2,
+  "git_commit": "cbf5195abc38e4a44fd0d2648e1fcddbae5aa5b3"
+}

@@ -10,7 +10,9 @@ Writes to results/e4/figures/ (PDF for the paper, PNG for viewing):
   fig10_seq_mission         where authentication fits in a drone mission
 
 The numbers on the arrows are measured values: signing times are the Step 1 medians
-(1,000 runs), packet sizes and times come from the Step 3 run link_20261124_210648.
+(1,000 runs). Packet sizes and the per-packet times of fig9 come from the Step 3 run
+link_20261124_210648; the challenge-to-verified medians of fig8 from the 100-run
+run link_20261127_231755 (the packet sizes are identical in both).
 """
 from pathlib import Path
 
@@ -95,11 +97,11 @@ def fig8():
            width=4.15, side="right")
     d.arrow(D, G, -3.72, "3  AUTH = M | sig", "64 B of data:  Ed25519 168 B in 1 packet  ·  ML-DSA-44 2,544 B in "
             "2 Wi-Fi packets\n(10 frames if each frame carries at most 255 B, like MAVLink)", color=ORANGE)
-    d.note(G, -4.18, "4  Check: challenge is the one sent\n    Verify(public key, M, sig): under 1.2 ms",
-           width=2.75, side="left")
+    d.note(G, -4.18, "4  Check: challenge is the one sent\n    Verify(public key, M, sig): under 1.2 ms (laptop)",
+           width=3.05, side="left")
     d.arrow(G, D, -4.85, "5  RESULT", "accepted / rejected (41 B)", color=BLUE)
-    d.ax.text(3.5, -5.3, "Challenge to verified signature (Wi-Fi, 64 B of data, median):  "
-              "Ed25519 19.5 ms  ·  ML-DSA-44 90.7 ms  ·  RSA-3072 440 ms",
+    d.ax.text(3.5, -5.3, "Challenge to verified signature (Wi-Fi, UDP, 64 B of data, median of 100):  "
+              "Ed25519 17.8 ms  ·  ML-DSA-44 65.4 ms  ·  RSA-3072 389 ms",
               ha="center", va="center", fontsize=7, color=INK, bbox=dict(fc="white", ec="none", pad=0.6))
     d.save("fig8_seq_authentication")
 

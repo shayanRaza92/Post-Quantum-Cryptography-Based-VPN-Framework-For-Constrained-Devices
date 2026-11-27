@@ -132,6 +132,16 @@ def pct(v, p):
     return float(v[max(0, int(np.ceil(p / 100 * len(v))) - 1)]) if len(v) else float("nan")
 
 
+def median_ci(v, reps=10000, seed=1):
+    """95% bootstrap confidence interval of the median (percentile method, fixed seed)."""
+    v = np.asarray(v, float)
+    if len(v) < 2:
+        return float("nan"), float("nan")
+    rng = np.random.default_rng(seed)
+    meds = np.median(rng.choice(v, size=(reps, len(v)), replace=True), axis=1)
+    return float(np.percentile(meds, 2.5)), float(np.percentile(meds, 97.5))
+
+
 def figures(summary, out):
     import matplotlib
     matplotlib.use("Agg")
@@ -261,6 +271,9 @@ def main():
             if val("auth_ip_bytes") and sig else float("nan"),
             "rtt_median_ms": float(np.median(val("rtt_ms"))) if val("rtt_ms") else float("nan"),
             "rtt_p95_ms": pct(val("rtt_ms"), 95) if val("rtt_ms") else float("nan"),
+            "rtt_median_ci_low_ms": median_ci(val("rtt_ms"))[0],
+            "rtt_median_ci_high_ms": median_ci(val("rtt_ms"))[1],
+            "rtt_mean_ms": float(np.mean(val("rtt_ms"))) if val("rtt_ms") else float("nan"),
             "drone_sign_median_ms": float(np.median(val("drone_sign_ms"))) if val("drone_sign_ms") else float("nan"),
             "transfer_median_ms": float(np.median(val("transfer_ms"))) if val("transfer_ms") else float("nan"),
             "link_median_ms": float(np.median(val("link_ms"))) if val("link_ms") else float("nan"),
@@ -315,12 +328,12 @@ def main():
     L.append("\n'none' = even the smallest message (64 bytes of data) needed more than one packet.")
     for st, title in (("udp", "Wi-Fi UDP"), ("mav", "MAVLink-sized frames")):
         L += [f"\n## {title}: every algorithm and data size (medians)\n",
-              "| Algorithm | Data (B) | Packets | Bytes on wire (auth msg) | Signature share | Challenge to verified (ms) | p95 (ms) | Drone signing (ms) | Network + ground station (ms) | Transfer of the message (ms) | Lost |",
-              "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
+              "| Algorithm | Data (B) | Packets | Bytes on wire (auth msg) | Signature share | Challenge to verified (ms) | 95% CI of the median (ms) | p95 (ms) | Drone signing (ms) | Network + ground station (ms) | Transfer of the message (ms) | Lost |",
+              "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
         for s in summary:
             if s["style"] == st:
                 L.append(f"| {s['algorithm']} | {s['data_len']:,} | {fmt(s['packets_median'], 0)} | {fmt(s['auth_ip_bytes_median'], 0)} | "
-                         f"{fmt(s['signature_share_percent'])}% | {fmt(s['rtt_median_ms'])} | {fmt(s['rtt_p95_ms'])} | "
+                         f"{fmt(s['signature_share_percent'])}% | {fmt(s['rtt_median_ms'])} | {fmt(s['rtt_median_ci_low_ms'])}-{fmt(s['rtt_median_ci_high_ms'])} | {fmt(s['rtt_p95_ms'])} | "
                          f"{fmt(s['drone_sign_median_ms'])} | {fmt(s['link_median_ms'])} | {fmt(s['transfer_median_ms'], 2)} | {fmt(s['lost_percent'])}% |")
     missing = sum(1 for c in auth.values() if c["incomplete"])
     if missing:
