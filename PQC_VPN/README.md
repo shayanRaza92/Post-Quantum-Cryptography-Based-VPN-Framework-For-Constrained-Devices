@@ -25,7 +25,7 @@ AES-256 is already considered safe against quantum computers, so the encryption 
 ## What is in this folder
 
 * `esp32_client/`: the code for the ESP32 (Arduino IDE).
-  * `esp32_client.ino`: Wi-Fi, connecting (and trying again if it fails), sending pings. It runs in its own task with a **64 KB stack**, because ML-DSA-44 signing needs about 34 KB of stack.
+  * `esp32_client.ino`: Wi-Fi, connecting (and trying again if it fails), sending pings. It runs in its own task with a **64 KB stack**. ML-DSA-44 signing needs about 15 KB of stack (measured: 15,476 B; the whole task uses about 16 KB), so 64 KB leaves a large safety margin.
   * `AuthManager`: the handshake (ML-DSA-44 + ML-KEM-512).
   * `DeviceIdentity`: the ESP32's own ML-DSA-44 key, saved in flash.
   * `SecureTunnel`: encryption of messages (AES-256-GCM, on the ESP32's built-in AES hardware).

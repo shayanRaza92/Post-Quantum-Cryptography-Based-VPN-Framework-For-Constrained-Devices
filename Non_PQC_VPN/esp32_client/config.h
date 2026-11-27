@@ -4,11 +4,11 @@
 #include <Arduino.h>
 
 // --- Wi-Fi Network Credentials ---
-const char* const WIFI_SSID     = "Redmi 13C";     // Name of your Wi-Fi network
-const char* const WIFI_PASSWORD = "92144444";      // Password of your Wi-Fi network
+const char* const WIFI_SSID     = "YOUR_WIFI_SSID";     // Name of your Wi-Fi network
+const char* const WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";      // Password of your Wi-Fi network
 
 // --- Server Network Settings ---
-const char* const GATEWAY_IP      = "10.38.28.216"; // IP address of your laptop running the server
+const char* const GATEWAY_IP      = "YOUR_LAPTOP_IP"; // IP address of your laptop running the server
 const uint16_t    GATEWAY_PORT    = 9000;             // Port number the server is listening on
 
 // --- Protocol Version & Algorithm Identifiers ---

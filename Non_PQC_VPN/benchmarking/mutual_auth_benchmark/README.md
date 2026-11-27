@@ -49,6 +49,18 @@ The tests run on the ESP32 alone, without Wi-Fi, so only the algorithm itself is
 | SIG-8 | Stack used | 4,116 bytes | 3,944 bytes | **3,928 bytes** | **RSA-3072** |
 | SIG-9 | Correct results | **PASS** (incl. official test vector) | **PASS** | **PASS** | **All** |
 
+### Re-run on 27 Nov 2026 (same sketch, Arduino core 3.3.12)
+
+To check that these numbers still hold, the benchmark was run again (full output: `results/sig_bench_rerun_2026-11-27.log`). The results are almost identical:
+
+| What (median) | Ed25519 | ECDSA P-256 | RSA-3072 |
+| :--- | :---: | :---: | :---: |
+| Make key pair | 8.68 ms (before: 8.68) | 145.94 ms (146.04) | 11,394 ms (19,947; RSA key generation varies a lot, here 4.2 to 37.9 s) |
+| Sign | 9.59 ms (9.59) | 157.71 ms (157.70) | 386.55 ms (386.66) |
+| Verify | 19.73 ms (19.76) | 312.15 ms (312.38) | 1.73 ms (1.71) |
+| Sign + verify | 29.32 ms (29.35) | 469.85 ms (470.09) | 388.40 ms (388.27) |
+| Correct results | PASS | PASS | PASS |
+
 ## Why we chose Ed25519
 
 1. **It is the fastest per handshake.** Signing and verifying together take **29.35 ms**. ECDSA takes 470.09 ms (16 times slower) and RSA takes 388.27 ms (13 times slower).

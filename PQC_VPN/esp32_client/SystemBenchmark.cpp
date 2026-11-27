@@ -3,6 +3,8 @@
 #include <WiFi.h>
 #include <sodium.h>
 #include "esp_timer.h"
+#include "esp_arduino_version.h"
+#include "mbedtls/version.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "mbedtls/gcm.h"
@@ -522,6 +524,15 @@ void runSystemBenchmark() {
   Serial.printf ("SYSTEM BENCHMARK: %s\n", VPN_NAME);
   Serial.printf ("Gateway %s:%u | ESP32 @ %u MHz | handshake/tunnel output silenced while measuring\n",
                  GATEWAY_IP, (unsigned)GATEWAY_PORT, (unsigned)getCpuFrequencyMhz());
+  Serial.printf ("META,build,%s %s\n", __DATE__, __TIME__);
+  Serial.printf ("META,protocol,4-message handshake + SA binding (keys bound to the handshake hash TH)\n");
+  Serial.printf ("META,arduino_core,%s\n", ESP_ARDUINO_VERSION_STR);
+  Serial.printf ("META,esp_idf,%s\n", esp_get_idf_version());
+  Serial.printf ("META,mbedtls,%s\n", MBEDTLS_VERSION_STRING);
+  Serial.printf ("META,libsodium,%s\n", sodium_version_string());
+  Serial.printf ("META,chip,%s rev %d, %d cores, CPU %u MHz\n", ESP.getChipModel(), ESP.getChipRevision(),
+                 ESP.getChipCores(), (unsigned)getCpuFrequencyMhz());
+  Serial.printf ("META,wifi_rssi_dbm,%d\n", (int)WiFi.RSSI());
   Serial.println("==============================================================================");
   Serial.println("BENCH,id,metric,n,mean,median,p95,std,min,max,unit");
 

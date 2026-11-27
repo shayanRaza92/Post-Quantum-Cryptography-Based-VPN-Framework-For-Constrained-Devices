@@ -17,10 +17,10 @@ The benchmark has four parts:
 
 | Part | What it does | Where it runs | Status |
 |---|---|---|---|
-| **A** | Tests the VPN on a real ESP32 over real Wi-Fi (tests B0-B7) | ESP32 + laptop | Done (classical: 2 runs, post-quantum: 1 run) |
-| **B** | Tests the gateway with many simulated ESP32s (tests L0-L6) | Laptop | Done |
+| **A** | Tests the VPN on a real ESP32 over real Wi-Fi (tests B0-B7) | ESP32 + laptop | Done: 3 runs per VPN |
+| **B** | Tests the gateway with many simulated ESP32s (tests L0-L6) | Laptop | Done: 3 runs per VPN |
 | **C** | Compares the gateway's crypto cost fairly, classical vs. post-quantum | Laptop | Done |
-| **D** | Checks our post-quantum libraries against two independent implementations, with 1,000 random inputs | Laptop | Done: 9,000 / 9,000 identical |
+| **D** | Checks our post-quantum libraries against two independent implementations, with 1,000 random inputs | Laptop | Done twice: 2 x 9,000 / 9,000 identical |
 
 ---
 
@@ -51,53 +51,56 @@ While measuring, the ESP32 does not print its normal handshake tables. Printing 
    For `PQC_VPN`, build the libraries first with `laptop_server/build_native_libs.sh`.
 2. In `esp32_client/config.h`, set `#define BENCHMARK_MODE 1`. Also check `WIFI_SSID`, `WIFI_PASSWORD` and `GATEWAY_IP`. The board must be in `authorized_devices.json`.
 3. Upload, open the Serial Monitor at 115200 baud, and wait for **BENCHMARK COMPLETE**. Keep the board in the same place for both VPNs, because the Wi-Fi affects B2-B4.
-4. Copy all lines that start with `BENCH,` into `results/esp32_results.csv`. The first `BENCH,` line is the header.
-5. Set `BENCHMARK_MODE` back to `0` and upload again for normal use.
+4. Close the Serial Monitor and save each run with the capture script (it resets the board, so every run starts from the beginning). Do 3 runs:
+   ```bash
+   python3 benchmarking/capture_esp32_bench.py --port /dev/ttyUSB0 --out benchmarking/system_benchmark/results --name esp32_results_run1
+   ```
+   (then `run2` and `run3`). It saves the full output (`.log`) and the `BENCH,` lines (`.csv`).
+5. Combine the runs: `python3 benchmarking/system_benchmark/aggregate_runs.py esp32 --classical ... --pqc ...` (see the top of that file).
+6. Set `BENCHMARK_MODE` back to `0`, put the placeholders back in place of your Wi-Fi password and IP, and upload again for normal use.
 
-### Results (ESP32-D0WD at 240 MHz, Wi-Fi from a Redmi 13C phone hotspot; the ESP32 and the laptop both connect to it)
+**Before measuring, set up the laptop the same way every time:** charger plugged in, **Performance** power mode, and Wi-Fi power saving off (`sudo iwconfig wlo1 power off`; check with `iwconfig wlo1`). The laptop runs the gateway, so a slowed-down CPU or a sleeping Wi-Fi card shows up in the ESP32's times.
+
+### Results (3 runs per VPN, 27 Nov 2026)
+
+**Setup:** ESP32-D0WD at 240 MHz (Arduino core 3.3.12, ESP-IDF 5.5.5, mbedTLS 3.6.6, libsodium 1.0.21). The ESP32 and the laptop gateway (HP Victus 15, charger in, Performance mode, Wi-Fi power saving off) both on the same phone hotspot, the ESP32 about 1 m away (signal about -6 dBm). The code measured is the current one: the 4-message handshake **with SA binding**. Each VPN was measured 3 times; each cell is **the mean over the 3 runs ± the 95% confidence interval** (Student t, as in our test plan). For times, each run contributes its median (or p95). 1 KB = 1,024 bytes.
 
 | Test | What | Classical | Post-quantum | Post-quantum vs. classical |
 |---|---|---|---|---|
-| B0 | Known-answer tests passed | **9 / 9** | **13 / 13** | both correct |
-| B1 | AES-256-GCM encrypt + decrypt, 1,023 bytes | 1.21 ms per KB | 1.21 ms per KB | same (same code) |
-| B2 | Handshake, messages 1-4: median / p95 | 92.7 / 181.6 ms | **219.3 / 406.4 ms** | **2.4 times longer** |
-| B2 | Failed handshakes | 0 / 100 | 0 / 100 | same |
+| B0 | Known-answer tests passed (every run) | **9 / 9** | **13 / 13** | both correct |
+| B1 | AES-256-GCM encrypt + decrypt, 1,023 bytes | 1.21 ms per KB | 1.23 ms per KB | same AES code |
+| B1 | AES-256-GCM encrypt + decrypt, 64 bytes | 2.37 ms per KB | 2.71 ms per KB | +0.02 ms per message (program build, see below) |
+| B2 | Handshake, messages 1-4: median | 85.7 ± 4.2 ms | **187.6 ± 9.6 ms** | **2.2 times longer** |
+| B2 | Handshake, messages 1-4: p95 | 144.9 ± 35.0 ms | 322.5 ± 41.3 ms | |
+| B2 | Failed handshakes | 0 / 300 | 0 / 300 | same |
 | B2 | Bytes sent for one handshake | 346 bytes | **6,562 bytes** | **19 times more** |
-| B3 | Extra delay from the VPN (median): 64 B / 1,023 B | +0.7 / +2.3 ms | +0.7 / +2.8 ms | about the same |
-| B4a | Most data the VPN can send | 1,119 kbps | 788 kbps | see note below |
-| B4b | Delivered when 102.4 kbps is sent | 102.4 kbps, 750 / 750 | 102.4 kbps, 750 / 750 | same |
-| B4b | Reply time during the stream: median / p95 | 14.7 / 84.8 ms | 13.9 / 131.4 ms | same median |
-| B5 | Rekey time: median / p95 | 42.9 / 53.6 ms | **25.0 / 39.6 ms** | **post-quantum is faster** |
-| B6 | CPU use: quiet / normal use / 102 kbps stream | 1.0% / 1.2% / 9.3% | 1.0% / 1.2% / 9.3% | same |
-| B7 | Most heap used | 126 KB | **194 KB** | +68 KB (mostly the 64 KB task stack) |
-| B7 | Stack never used | 3.3 KB of 8 KB | 49.3 KB of 64 KB | |
-| B7 | Program size (normal build) | 1,029 KB | 1,039 KB | +10 KB |
+| B3 | Extra delay from the VPN (median VPN - median plain), 64 B | +0.26 ± 0.80 ms | +0.84 ± 0.32 ms | below 1 ms: within Wi-Fi noise |
+| B3 | Extra delay from the VPN, 1,023 B | +0.69 ± 4.95 ms | +1.28 ± 1.15 ms | about 1-2 ms |
+| B4a | Most data the VPN can send | 1,575 ± 615 kbps | 1,630 ± 411 kbps | **the same** |
+| B4b | Delivered when 102.4 kbps is sent | 102.4 kbps, 750 / 750 (every run) | 102.4 kbps, 750 / 750 (every run) | same |
+| B4b | Reply time during the stream: median / p95 | 10.1 / 34.7 ms | 9.3 / 16.8 ms | same median |
+| B5 | Rekey time: median | 37.5 ± 4.2 ms | **22.5 ± 1.1 ms** | **post-quantum is faster** |
+| B5 | Rekey time: p95 | 69.8 ± 95.1 ms | 26.3 ± 4.4 ms | |
+| B6 | CPU use: quiet / normal use / 102.4 kbps stream | 1.0% / 1.1% / 8.9% | 1.0% / 1.1% / 9.4% | same |
+| B7 | Most heap used | 126.7 ± 9.0 KB | **189.7 ± 2.0 KB** | +63 KB (mostly the 64 KB task stack) |
+| B7 | Heap still free after the run | 178.6 KB | 86.9 KB | |
+| B7 | Task stack never used | 3.3 KB of 8 KB | 48.2 KB of 64 KB | the PQC task uses about 15.8 KB |
+| B7 | Program size (benchmark build) | 1,021 KB | 1,033 KB | +12 KB |
 
-The raw data is in `Non_PQC_VPN/benchmarking/system_benchmark/results/esp32_results.csv` (classical) and `PQC_VPN/benchmarking/system_benchmark/results/esp32_results.csv` (post-quantum). An earlier classical run is kept in `esp32_results_run1.csv`.
+Every run's numbers are in `results/esp32_results_run{1,2,3}.csv` (classical: `Non_PQC_VPN/benchmarking/system_benchmark/results/`), the combined table in `results/esp32_summary.md` (made by `aggregate_runs.py`), and the full ESP32 output in the `.log` files. The earlier single runs (10 Nov 2026, before SA binding) are kept in `results/archive_before_SA_binding/`.
 
 **What the results show:**
-* **Post-quantum makes the handshake 2.4 times longer: 219 ms instead of 93 ms.** Two reasons: the ESP32 has to sign with ML-DSA-44, which is slower than Ed25519 and sometimes has to try again, and the handshake sends 6,562 bytes instead of 346, which takes longer over Wi-Fi. A connection is made once and then kept, so a quarter of a second is fine for an IoT device.
-* **After the handshake, there is no difference.** Both VPNs encrypt with the same AES-256-GCM code, so the extra delay per message (about 1-3 ms), the CPU use (about 1% in normal use) and the steady 102 kbps stream are the same.
-* **Rekeying is faster with post-quantum: 25 ms instead of 43 ms.** ML-KEM-512 is faster than X25519 on the ESP32. The laptop tests (Part C) found the same thing.
-* **Post-quantum needs more memory:** about 68 KB more heap. Most of it is the 64 KB stack of the task that runs the post-quantum code (ML-DSA-44 needs a big stack). About 89 KB of heap is still free. The program is only 10 KB bigger.
-* **The lower top speed in B4a (788 vs. 1,119 kbps) is most likely the Wi-Fi, not the VPN.** Once connected, both VPNs run exactly the same encryption code, and the CPU use was the same. The Wi-Fi was clearly worse during the post-quantum run: the plain messages (no VPN) were slow in the worst 5% of cases (p95 142 ms vs. 30 ms in the classical run). To be sure, run both again one after the other and compare.
+* **Post-quantum makes the handshake 2.2 times longer: about 188 ms instead of 86 ms.** Two reasons: the ESP32 signs with ML-DSA-44, which is slower than Ed25519 and sometimes has to try again, and the handshake sends 6,562 bytes instead of 346. A connection is made once and then kept, so about a fifth of a second is fine for an IoT device. No handshake failed in 600 attempts.
+* **After the handshake there is no real difference.** Both VPNs use the same AES-256-GCM code: the extra delay per message is about 1 ms (less than the normal ups and downs of the Wi-Fi), both reach about 1,600 kbps, both carry a steady 102.4 kbps stream without losing a message, and both use about 1% CPU in normal use and about 9% for the stream.
+* **Rekeying is faster with post-quantum: 22.5 ms instead of 37.5 ms**, because ML-KEM-512 is faster than X25519 on the ESP32 (Part C finds the same on the laptop).
+* **Post-quantum needs more memory:** about 63 KB more heap. Most of it is the 64 KB stack of the task that runs the post-quantum code; that task really uses only about 15.8 KB of it (the ML-DSA-44 signing needs about 15 KB, see `../mutual_auth_benchmark/`). About 87 KB of heap is still free. The program is only 12 KB bigger.
 
 **How to read these numbers:**
-* **Use medians, not means, for anything that goes over Wi-Fi.** A few messages sometimes get stuck for 100 ms or more, and those pull the mean up. This even made some mean "extra delays" come out *negative*, because the plain messages happened to get more of these delays. The median is the right number: for small messages the VPN costs less than 1 ms, which is less than the normal ups and downs of the Wi-Fi.
-* **Compare the handshakes using messages 1-4, not the TCP connection time.** The test has to wait 2.2 seconds between handshakes, because the gateway allows only 5 connections per device every 10 seconds. During that pause, the phone hotspot turns its radio down to save power, and the next connection has to wait for it to wake up. A normal Wi-Fi router gives steadier numbers.
-* **Reply times during the stream include rekeys.** While a rekey runs, the messages due in that time wait and then go out together. The p95 shows these moments; the median is the normal case.
-
-**The two classical runs agree,** which shows the results are repeatable:
-
-| | Classical run 1 | Classical run 2 (above) |
-|---|---|---|
-| Handshake, messages 1-4 (median) | 88.7 ms | 92.7 ms |
-| AES-256-GCM per KB | 1.22 ms | 1.21 ms |
-| Extra delay, 1,023 B (median) | +2.6 ms | +2.3 ms |
-| Most data the VPN can send | 1,208 kbps | 1,119 kbps |
-| CPU: quiet / normal / stream | 1.0 / 1.2 / 9.1 % | 1.0 / 1.2 / 9.3 % |
-
-(Run 1 used an earlier version of the benchmark, so its B4b reply times and B5 rekey time are not compared.)
+* **Use medians for anything that goes over Wi-Fi.** A few messages sometimes wait much longer (the p95 shows this), and those would pull a mean up.
+* **The extra delay (B3) can even come out slightly negative in one run** (classical run 2: -0.10 ms and -1.60 ms). The VPN does not make messages faster: its real cost (under 0.2 ms of AES on the ESP32, B1) is smaller than the Wi-Fi's normal variation, so the plain and the VPN messages sometimes swap places. The 95% confidence interval shows this honestly.
+* **B1, 64-byte messages, post-quantum 2.71 vs. classical 2.37 ms per KB:** both firmwares call exactly the same AES-GCM function; the difference (about 0.02 ms per small message) comes from the different program build (code layout and flash cache), not from the VPN protocol. For 1 KB messages they are almost equal.
+* **The earlier, single-run measurement (10 Nov) gave a lower top speed for post-quantum (788 vs. 1,119 kbps).** With 3 runs and the laptop set up as above, both reach about 1,600 kbps, which confirms that the old gap came from the Wi-Fi, not from the VPN.
+* **Reply times during the stream include rekeys.** While a rekey runs, the messages due in that time wait and then go out together; the p95 shows these moments.
 
 ---
 
@@ -135,7 +138,7 @@ One fixed input can miss a mistake that only shows up for some inputs. So `refer
 
 Each side must also accept the other side's signatures (including the random signatures the VPN really uses), and both must reject a changed signature.
 
-**Result: 9,000 / 9,000 checks identical** (1,000 tests, random seed 2030312455, saved in `results/reference_cross_check.txt`).
+**Result: 9,000 / 9,000 checks identical, twice** (10 Nov 2026, random seed 2030312455; and 27 Nov 2026 with the current code, random seed 323908427). Both runs are saved in `results/reference_cross_check.txt`.
 ```bash
 pip install kyber-py dilithium-py        # only the first time
 python3 benchmarking/system_benchmark/reference_cross_check.py --trials 1000
@@ -146,7 +149,7 @@ python3 benchmarking/system_benchmark/reference_cross_check.py --trials 1000
 ## Part B: the gateway on the laptop (tests L0-L6)
 
 ```bash
-python3 benchmarking/system_benchmark/gateway_benchmark.py     # about 2 minutes; saved in results/laptop_gateway_results.csv
+bash benchmarking/system_benchmark/run_laptop_3x.sh     # 3 runs, about 2 minutes each; saved in results/laptop_gateway_results_run{1,2,3}.csv
 ```
 
 | Test | What it measures |
@@ -161,28 +164,30 @@ python3 benchmarking/system_benchmark/gateway_benchmark.py     # about 2 minutes
 
 Each simulated device uses its own address (`127.0.0.x`, Linux only), like separate ESP32s on Wi-Fi.
 
-### Results (HP Victus 15, 12 CPU threads, Python 3.12, plugged in, Performance power mode)
+### Results (3 runs per VPN, 27 Nov 2026; HP Victus 15, 12 CPU threads, Python 3.12, plugged in, Performance power mode)
+
+Each cell is the mean over the 3 runs (± 95% confidence interval where it matters). Per run: `results/laptop_gateway_results_run{1,2,3}.csv`; combined: `results/laptop_summary.md`.
 
 | Test | What | Classical (`Non_PQC_VPN`) | Post-quantum (`PQC_VPN`) |
 |---|---|---|---|
-| L0 | Known-answer tests | 8 / 8 PASS | 12 / 12 PASS |
-| L2 | AES-256-GCM encrypt + decrypt, 1,023-byte message (median) | 0.0147 ms | 0.0143 ms |
-| L3 | Full handshake on the laptop: median / p95 | 1.17 / 1.30 ms | 2.19 / 3.31 ms |
+| L0 | Known-answer tests (every run) | 8 / 8 PASS | 12 / 12 PASS |
+| L2 | AES-256-GCM encrypt / decrypt, 1,023-byte message (median) | 7.2 / 7.6 µs | 7.1 / 7.6 µs |
+| L3 | Full handshake on the laptop: median / p95 | 1.20 ± 0.16 / 1.36 ms | 2.31 ± 0.12 / 3.55 ms |
 | L3 | Bytes sent for one handshake | 346 bytes | 6,562 bytes |
-| L4 | Rekey on the laptop: median / p95 | 0.44 / 0.48 ms | 0.15 / 0.34 ms |
-| L5 | 10 devices connecting at the same moment: let in / refused (limit: 8 handshakes at a time) | 10 / 0 | 8 / 2 |
-| L5 | 20 devices connecting at the same moment: let in / refused (limit: 8 handshakes at a time) | 20 / 0 | 19 / 1 |
-| L5 | 40 devices connecting at the same moment: let in / refused (limit: 8 handshakes at a time) | 40 / 0 | 35 / 5 |
-| L6 | 1 connected device(s): messages per second in total, reply time median / p95 | 23,475 msg/s, 0.04 / 0.06 ms | 24,915 msg/s, 0.04 / 0.05 ms |
-| L6 | 10 connected device(s): messages per second in total, reply time median / p95 | 11,778 msg/s, 0.80 / 1.49 ms | 11,773 msg/s, 0.80 / 1.50 ms |
-| L6 | 40 connected device(s): messages per second in total, reply time median / p95 | 11,633 msg/s, 3.24 / 6.24 ms | 11,651 msg/s, 3.22 / 6.26 ms |
+| L4 | Rekey on the laptop: median | 0.29 ms | 0.21 ms |
+| L5 | 10 devices connecting at the same moment: let in (limit: 8 handshakes at a time) | 10 of 10 | 9.3 of 10 (runs: 10, 8, 10) |
+| L5 | 20 devices at the same moment: let in | 20 of 20 | 17 of 20 |
+| L5 | 40 devices at the same moment: let in | 40 of 40 | 33.3 of 40 (runs: 33, 34, 33) |
+| L6 | 1 connected device: messages per second in total | 22,268 ± 14,662 | 25,343 ± 3,888 |
+| L6 | 10 connected devices: messages per second, reply time median | 11,898 msg/s, 0.79 ms | 12,172 msg/s, 0.77 ms |
+| L6 | 40 connected devices: messages per second, reply time median | 11,628 msg/s, 3.23 ms | 11,098 msg/s, 3.38 ms |
 | L6 | Devices dropped or unable to connect (40 devices) | 0 | 0 |
 
 **What this shows:**
-* The AES-GCM encryption (L2) is the same code in both VPNs, and it now measures the same in both runs (about 0.015 ms per 1 KB message). This means the laptop gave stable numbers this time.
+* The AES-GCM encryption (L2) is the same code in both VPNs and measures the same (about 7 µs per 1 KB message on the laptop).
 * A handshake on the laptop takes about 2 times longer with post-quantum (L3), and sends 19 times more bytes.
-* With 40 devices connecting at exactly the same moment, the classical gateway lets them all in, while the post-quantum gateway refuses a few, because its handshakes take longer and the limit of 8 handshakes at a time is reached sooner (L5). Refused devices simply try again.
-* After the handshake both VPNs are the same: the same number of messages per second and the same reply times (L6). One device can send about 23,000-25,000 messages per second through the gateway on this laptop; with 40 devices the total is about 11,600 per second, and no device was ever dropped.
+* With 10-40 devices connecting at exactly the same moment, the classical gateway lets them all in, while the post-quantum gateway tells a few to try again, because its handshakes take longer and the limit of 8 handshakes at a time is reached sooner (L5). Refused devices simply retry.
+* After the handshake both VPNs are the same: about 12,000 messages per second in total and the same reply times (L6), and no device was ever dropped. (One classical run with one device was slower, 15,577 msg/s, which is why that cell has a wide interval.)
 
 ---
 
@@ -196,34 +201,34 @@ This script measures the classical and the post-quantum gateway **taking turns**
 | Operation | Classical (Ed25519 + X25519) | Post-quantum (ML-DSA-44 + ML-KEM-512) | PQC / classical |
 |---|---|---|---|
 | Key exchange | 0.062 ms (p95 0.069) | 0.021 ms (p95 0.023) | 0.34x |
-| Sign gateway transcript | 0.029 ms (p95 0.032) | 0.233 ms (p95 0.845) | 7.96x |
-| Verify device signature | 0.078 ms (p95 0.083) | 0.059 ms (p95 0.062) | 0.76x |
-| HKDF session keys | 0.004 ms (p95 0.004) | 0.004 ms (p95 0.004) | 1.00x |
-| Two HMAC confirmation tags | 0.002 ms (p95 0.003) | 0.002 ms (p95 0.003) | 0.99x |
-| TOTAL gateway crypto | 0.177 ms (p95 0.186) | 0.323 ms (p95 0.932) | 1.82x |
+| Sign gateway transcript | 0.029 ms (p95 0.031) | 0.226 ms (p95 0.806) | 7.75x |
+| Verify device signature | 0.078 ms (p95 0.083) | 0.059 ms (p95 0.062) | 0.75x |
+| HKDF session keys | 0.004 ms (p95 0.004) | 0.004 ms (p95 0.004) | 1.01x |
+| Two HMAC confirmation tags | 0.002 ms (p95 0.003) | 0.002 ms (p95 0.003) | 1.00x |
+| TOTAL gateway crypto | 0.177 ms (p95 0.185) | 0.311 ms (p95 0.891) | 1.76x |
 
-Between rounds, the total changed by only 1% (classical) and 15% (post-quantum, because ML-DSA signing time varies). An earlier run on battery gave almost the same ratios (1.98 times in total, 8.5 times for signing), so the result does not depend on the laptop's power mode.
+Measured on 27 Nov 2026 with the current code (`results/gateway_crypto_comparison.md`). Between rounds, the total changed by only 1% (classical) and 5% (post-quantum). The earlier measurement (10 Nov 2026) gave 0.177 / 0.323 ms (1.82x), so the result is repeatable.
 
 ### What these numbers mean
-* **Post-quantum costs the gateway about 1.8 times the crypto work per handshake**, about 0.15 ms more. Almost all of it is **ML-DSA-44 signing**: 8 times Ed25519 normally, and about 26 times in the slowest 5% of cases. ML-DSA sometimes has to throw a signature away and try again, which makes some signatures much slower than others.
-* **ML-KEM-512 is faster than X25519** (0.34 times the time), and **ML-DSA-44 checks signatures faster than Ed25519** (0.76 times). The post-quantum key exchange itself is not the expensive part.
-* **The real cost of post-quantum is size, not computing time:** one handshake is 6,562 bytes instead of 346 (19 times more). On Wi-Fi this matters much more than a fraction of a millisecond on the gateway: on the ESP32 (B2) the handshake took 219 ms instead of 93 ms.
+* **Post-quantum costs the gateway about 1.8 times the crypto work per handshake**, about 0.13 ms more. Almost all of it is **ML-DSA-44 signing**: about 8 times Ed25519 normally, and about 26 times in the slowest 5% of cases. ML-DSA sometimes has to throw a signature away and try again, which makes some signatures much slower than others.
+* **ML-KEM-512 is faster than X25519** (0.34 times the time), and **ML-DSA-44 checks signatures faster than Ed25519** (0.75 times). The post-quantum key exchange itself is not the expensive part.
+* **The real cost of post-quantum is size, not computing time:** one handshake is 6,562 bytes instead of 346 (19 times more). On Wi-Fi this matters much more than a fraction of a millisecond on the gateway: on the ESP32 (B2) the handshake took about 188 ms instead of 86 ms.
 * **After the handshake, both VPNs are the same.** Both encrypt with AES-256-GCM, so the cost per message, the number of messages per second and the delay do not depend on classical vs. post-quantum.
 * **Many devices at the same moment:** with 10-40 devices connecting at exactly the same time, some are refused, because the gateway only allows 8 handshakes at the same time (to protect itself from floods). This happens more with post-quantum, because its handshakes take longer. A refused device tries again after 3 s, 6 s, 12 s, and so on. In L6, every device got connected this way.
 * **One device on its own is also limited by the rekey rules:** at most 2,000 messages with one key and one rekey every 5 seconds, which is about 400 messages per second per device. This is on purpose, and far more than an ESP32 sends. L6 switches this limit off, because it is testing the gateway.
 
-**For reliable laptop numbers:** plug the laptop in and set the power mode to **Performance**, as was done for the results above.
+**For reliable laptop numbers:** plug the laptop in and set the power mode to **Performance** (and Wi-Fi power saving off for Part A), as was done for the results above.
 
 ---
 
 ## Graphs
 
-All graphs are made by `make_graphs.py` (in `PQC_VPN/benchmarking/system_benchmark/`) from the result files above. Blue is always classical and orange is always post-quantum.
+All graphs are made by `make_graphs.py` (in `PQC_VPN/benchmarking/system_benchmark/`) from the 3 runs of each VPN. Bars are the mean over the 3 runs. Blue is always classical and orange is always post-quantum.
 
 ### Handshake time on the ESP32 (B2)
 ![Handshake time on the ESP32 (B2)](results/graphs/1_esp32_handshake_time.png)
 
-Bars are the median, the line on top is the p95. The post-quantum handshake takes 219 ms instead of 93 ms.
+Bars are the median (mean of 3 runs), the line on top is the p95. The post-quantum handshake takes about 188 ms instead of 86 ms.
 
 ### Bytes sent in the handshake
 ![Bytes sent in the handshake](results/graphs/2_handshake_bytes.png)
@@ -238,7 +243,7 @@ ML-KEM-512 and ML-DSA-44 verify are faster than X25519 and Ed25519. Only ML-DSA-
 ### After the handshake: extra delay and CPU use (B3, B6)
 ![After the handshake: extra delay and CPU use (B3, B6)](results/graphs/4_after_handshake_latency_cpu.png)
 
-Both VPNs use the same AES-256-GCM tunnel, so these bars are almost the same.
+Both VPNs use the same AES-256-GCM tunnel, so these bars are almost the same. The whiskers on the extra delay are the 95% confidence interval over the 3 runs: the delay is about 1 ms and partly hidden in the Wi-Fi's own variation.
 
 ### Rekey time on the ESP32 (B5)
 ![Rekey time on the ESP32 (B5)](results/graphs/5_rekey_time.png)
@@ -248,7 +253,7 @@ A rekey only swaps a new key exchange (no signatures), and ML-KEM-512 is faster 
 ### Memory on the ESP32 (B7)
 ![Memory on the ESP32 (B7)](results/graphs/6_esp32_memory.png)
 
-Most of the extra heap is the 64 KB stack of the task that runs the post-quantum handshake.
+Most of the extra heap is the 64 KB stack of the task that runs the post-quantum handshake (of which about 15.8 KB is really used). 1 KB = 1,024 bytes.
 
 ### Many devices connecting at the same moment (L5)
 ![Many devices connecting at the same moment (L5)](results/graphs/7_gateway_burst.png)
@@ -267,8 +272,11 @@ Once connected, the two VPNs behave the same. No session was dropped in any test
 * `gateway_benchmark.py`: the laptop tests (Part B), `--serve` mode for the ESP32 tests (Part A), and `--l1-json` for Part C.
 * `compare_gateway_crypto.py` (PQC_VPN only): the fair classical vs. post-quantum comparison (Part C).
 * `reference_cross_check.py` (PQC_VPN only): the 1,000 random tests against kyber-py and dilithium-py (Part D).
-* `results/laptop_gateway_results.csv`: Part B results (id, metric, n, mean, median, p95, std, min, max, unit).
-* `results/esp32_results.csv`: Part A results (`esp32_results_run1.csv`: an earlier classical run).
+* `results/laptop_gateway_results_run{1,2,3}.csv`: Part B results, one file per run (id, metric, n, mean, median, p95, std, min, max, unit).
+* `results/esp32_results_run{1,2,3}.csv` and `.log`: Part A results, one file per run, and the full ESP32 output.
+* `results/esp32_summary.md`, `results/laptop_summary.md` (and `.csv`): the 3 runs combined (mean ± 95% CI), made by `aggregate_runs.py`.
+* `run_laptop_3x.sh`: runs Part B three times. `../capture_esp32_bench.py`: saves an ESP32 run to files.
+* `results/archive_before_SA_binding/`: the earlier single runs (10 Nov 2026), before SA binding.
 * `make_graphs.py` (PQC_VPN only): makes the graphs in `results/graphs/` from the result files. Run `python3 make_graphs.py`.
 * `results/gateway_crypto_comparison.md` and `results/reference_cross_check.txt` (PQC_VPN only): Parts C and D.
 * `../../esp32_client/SystemBenchmark.*`, `KnownAnswerTests.*`, `VpnLog.*`: the ESP32 side of the benchmark (Part A).

@@ -1,0 +1,13 @@
+id,metric,column,label,unit,classical_runs,classical_mean,classical_ci95,pqc_runs,pqc_mean,pqc_ci95
+L2,seal_1023B,median,"Gateway encrypt, 1,023 B, median",us,7.3000;7.1000;7.1000,7.1667,0.2869,7.1000;7.2000;7.0000,7.1000,0.2484
+L2,open_1023B,median,"Gateway decrypt, 1,023 B, median",us,7.7000;7.5000;7.6000,7.6000,0.2484,7.7000;7.6000;7.4000,7.5667,0.3795
+L3,handshake_total_loopback,median,"Full handshake on the laptop, median",ms,1.2761;1.1746;1.1585,1.2031,0.1584,2.2542;2.3153;2.3530,2.3075,0.1239
+L3,handshake_total_loopback,p95,"Full handshake on the laptop, p95",ms,1.4961;1.2573;1.3185,1.3573,0.3082,3.4251;3.4560;3.7755,3.5522,0.4820
+L4,rekey_round_trip_loopback,median,"Rekey on the laptop, median",ms,0.2354;0.4260;0.2107,0.2907,0.2927,0.3199;0.1505;0.1551,0.2085,0.2397
+L5,burst_10_devices_accepted,mean,10 devices at once: accepted,,10.0000;10.0000;10.0000,10.0000,0.0000,10.0000;8.0000;10.0000,9.3333,2.8687
+L5,burst_40_devices_accepted,mean,40 devices at once: accepted,,40.0000;40.0000;40.0000,40.0000,0.0000,33.0000;34.0000;33.0000,33.3333,1.4343
+L6,tunnels_1_aggregate_messages_per_s,mean,1 device: messages per second,msg/s,15577.4000;24490.6000;26735.4000,22267.8000,14661.9889,26307.2000;26184.6000;23537.4000,25343.0667,3887.8756
+L6,tunnels_10_aggregate_messages_per_s,mean,10 devices: messages per second,msg/s,11999.0000;11939.2000;11757.2000,11898.4667,312.8808,12361.0000;12203.8000;11951.8000,12172.2000,512.8223
+L6,tunnels_40_aggregate_messages_per_s,mean,40 devices: messages per second,msg/s,11633.4000;11605.2000;11644.8000,11627.8000,50.6440,12110.0000;11509.2000;9675.6000,11098.2667,3150.5341
+L6,tunnels_40_round_trip,median,"40 devices: reply time, median",ms,3.2479;3.2201;3.2339,3.2340,0.0345,3.1141;3.2762;3.7520,3.3808,0.8237
+L6,tunnels_40_sessions_dropped,mean,40 devices: sessions dropped,,0.0000;0.0000;0.0000,0.0000,0.0000,0.0000;0.0000;0.0000,0.0000,0.0000

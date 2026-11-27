@@ -10,7 +10,8 @@
 #include "VpnLog.h"        // Print object that the benchmark can silence
 #include "SystemBenchmark.h" // End-to-end benchmark (BENCHMARK_MODE in config.h)
 
-// Dedicated 64 KB FreeRTOS stack size required for ML-DSA-44 NTT polynomial arithmetic (~34 KB peak);
+// Dedicated 64 KB FreeRTOS stack for the post-quantum code: ML-DSA-44 signing needs about 15 KB (measured 15,476 B;
+// the whole task peaks at about 16 KB in the system benchmark), so 64 KB leaves a large safety margin;
 // ML-KEM-512 KeyGen/Decaps run in the same task and need far less stack than ML-DSA-44 signing
 #define VPN_TASK_STACK_SIZE 65536
 

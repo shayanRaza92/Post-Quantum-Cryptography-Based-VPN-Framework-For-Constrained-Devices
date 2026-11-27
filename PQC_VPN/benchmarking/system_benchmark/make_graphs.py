@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
 """Make the graphs for the whole-VPN benchmark (classical vs. post-quantum).
 
-Reads the result files in both projects and saves PNGs in results/graphs/.
+Reads the 3 runs of each benchmark in both projects (results/esp32_results_run{1,2,3}.csv and
+results/laptop_gateway_results_run{1,2,3}.csv) and saves PNGs in results/graphs/. Every bar is the
+mean over the 3 runs (of each run's median); whiskers are the mean p95, or the 95% confidence
+interval over the runs where stated. Memory: 1 KB = 1,024 bytes.
 Run from anywhere:  python3 make_graphs.py
 """
+import math
+import statistics
 import csv
 import re
 from pathlib import Path
@@ -40,12 +45,27 @@ plt.rcParams.update({
 })
 
 
-def load(path):
-    rows = {}
-    with open(path) as f:
-        for r in csv.DictReader(f):
-            rows[(r["id"], r["metric"])] = {k: float(r[k]) for k in ("median", "p95", "mean")}
-    return rows
+T95 = {2: 12.706, 3: 4.303, 4: 3.182, 5: 2.776}
+
+
+def load(folder, stem):
+    """Mean over the runs <stem>_run1.csv, _run2.csv, ... of median / p95 / mean, plus the 95% CI
+    (Student t) of the median over the runs."""
+    runs = []
+    for path in sorted(folder.glob(f"{stem}_run*.csv")):
+        with open(path) as f:
+            runs.append({(r["id"], r["metric"]): {k: float(r[k]) for k in ("median", "p95", "mean")}
+                         for r in csv.DictReader(f)})
+    assert runs, f"no {stem}_run*.csv in {folder}"
+    out = {}
+    for key in runs[0]:
+        vals = [r[key] for r in runs if key in r]
+        d = {k: statistics.fmean(v[k] for v in vals) for k in ("median", "p95", "mean")}
+        meds = [v["median"] for v in vals]
+        d["ci"] = (T95.get(len(meds), 1.96) * statistics.stdev(meds) / math.sqrt(len(meds))) if len(meds) > 1 else 0.0
+        out[key] = d
+    out["_runs"] = len(runs)
+    return out
 
 
 def part_c(path):
@@ -98,10 +118,11 @@ def save(fig, name):
 
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
-    ce = load(CLASSICAL_DIR / "esp32_results.csv")
-    pe = load(PQC_DIR / "esp32_results.csv")
-    cl = load(CLASSICAL_DIR / "laptop_gateway_results.csv")
-    pl = load(PQC_DIR / "laptop_gateway_results.csv")
+    ce = load(CLASSICAL_DIR, "esp32_results")
+    pe = load(PQC_DIR, "esp32_results")
+    cl = load(CLASSICAL_DIR, "laptop_gateway_results")
+    pl = load(PQC_DIR, "laptop_gateway_results")
+    nr = f"mean of {ce['_runs']} runs"
 
     # 1. Handshake time on the ESP32
     fig, ax = plt.subplots(figsize=(7, 4.2))
@@ -110,8 +131,9 @@ def main():
                 [ce[k]["median"] for k in keys], [ce[k]["p95"] for k in keys],
                 [pe[k]["median"] for k in keys], [pe[k]["p95"] for k in keys],
                 lambda v: f"{v:.0f} ms")
-    ax.set_ylabel("Time on the ESP32 (ms), median")
-    ax.set_title("The post-quantum handshake takes about 2.4x longer on the ESP32")
+    ax.set_ylabel(f"Time on the ESP32 (ms), median ({nr})")
+    hk = ("B2", "handshake_msg1_to_msg4")
+    ax.set_title(f"The post-quantum handshake takes about {pe[hk]['median'] / ce[hk]['median']:.1f}x longer on the ESP32")
     legend(ax, loc="upper left")
     ax.set_ylim(0, 520)
     save(fig, "1_esp32_handshake_time.png")
@@ -142,7 +164,7 @@ def main():
     paired_bars(axes[1], ["Total"], [total[1]], [total[2]], [total[3]], [total[4]], lambda v: f"{v:.3f}")
     axes[1].set_ylim(0, 1.0)
     axes[1].set_yticklabels([])
-    fig.suptitle("Gateway: post-quantum costs 0.32 ms per handshake vs. 0.18 ms; signing is the slow step",
+    fig.suptitle(f"Gateway: post-quantum costs {total[3]:.2f} ms per handshake vs. {total[1]:.2f} ms; signing is the slow step",
                  x=0.01, ha="left", fontweight="bold", color=INK, fontsize=12)
     legend(axes[0], loc="upper right")
     fig.tight_layout()
@@ -151,12 +173,19 @@ def main():
     # 4. After the handshake: added latency and CPU (two separate panels, no dual axis)
     fig, axes = plt.subplots(1, 2, figsize=(10, 4.2))
     k = [("B3", "added_latency_median_64B"), ("B3", "added_latency_median_1023B")]
-    paired_bars(axes[0], ["64 B message", "1,023 B message"],
-                [ce[x]["median"] for x in k], [None, None], [pe[x]["median"] for x in k], [None, None],
-                lambda v: f"+{v:.2f} ms", show_p95=False)
-    axes[0].set_ylabel("Extra round-trip time vs. plain TCP (ms)")
-    axes[0].set_title("Extra delay from encryption", fontsize=11)
-    axes[0].set_ylim(0, 3.5)
+    w = 0.36
+    for off, d, col in ((-w / 2 - 0.01, ce, C_CLASSIC), (w / 2 + 0.01, pe, C_PQC)):
+        for i, x in enumerate(k):
+            m, ci = d[x]["median"], d[x]["ci"]
+            axes[0].bar(i + off, m, w, color=col, edgecolor=SURFACE, linewidth=1)
+            axes[0].errorbar(i + off, m, yerr=ci, color=INK2, capsize=4, linewidth=1)
+            label(axes[0], i + off, max(m + ci, 0), f"{m:+.2f} ms")
+    axes[0].axhline(0, color=INK2, linewidth=0.8)
+    axes[0].set_xticks([0, 1], ["64 B message", "1,023 B message"])
+    axes[0].tick_params(axis="x", length=0)
+    axes[0].set_ylabel(f"Extra round-trip time vs. plain TCP (ms), {nr}")
+    axes[0].set_title("Extra delay from encryption (whisker = 95% CI)", fontsize=11)
+    axes[0].set_ylim(-3, 7)
     k = [("B6", "cpu_idle_tunnel_average"), ("B6", "cpu_normal_ping_average"), ("B6", "cpu_sustained_512B_average")]
     paired_bars(axes[1], ["Idle tunnel", "Normal use", "Stream 512 B\nevery 40 ms"],
                 [ce[x]["median"] for x in k], [None] * 3, [pe[x]["median"] for x in k], [None] * 3,
@@ -175,10 +204,10 @@ def main():
     k = ("B5", "rekey_time")
     paired_bars(ax, ["Rekey inside the tunnel"], [ce[k]["median"]], [ce[k]["p95"]],
                 [pe[k]["median"]], [pe[k]["p95"]], lambda v: f"{v:.1f} ms")
-    ax.set_ylabel("Time on the ESP32 (ms), median")
-    ax.set_ylim(0, 75)
-    ax.set_title("Rekeying is faster with ML-KEM-512\n(25 ms vs. 43 ms)")
-    legend(ax, loc="upper right", fontsize=8.5)
+    ax.set_ylabel(f"Time on the ESP32 (ms), median ({nr})")
+    ax.set_ylim(0, 1.25 * max(ce[k]["p95"], pe[k]["p95"]))
+    ax.set_title(f"Rekeying is faster with ML-KEM-512\n({pe[k]['median']:.1f} ms vs. {ce[k]['median']:.1f} ms)")
+    legend(ax, loc="upper center", bbox_to_anchor=(0.5, -0.12), fontsize=8.5)
     save(fig, "5_rekey_time.png")
 
     # 6. Memory: heap peak and program size (two panels, different units)
@@ -193,7 +222,9 @@ def main():
         ax.tick_params(axis="x", length=0)
         ax.set_title(title, fontsize=11)
         ax.set_ylim(0, ylim)
-    fig.suptitle("Post-quantum needs about 66 KB more heap (mostly its 64 KB stack) and 11 KB more program",
+    dh = (pe[("B7", "heap_peak_used")]["median"] - ce[("B7", "heap_peak_used")]["median"]) / 1024
+    dp = (pe[("B7", "flash_firmware_size")]["median"] - ce[("B7", "flash_firmware_size")]["median"]) / 1024
+    fig.suptitle(f"Post-quantum needs about {dh:.0f} KB more heap (mostly its 64 KB stack) and {dp:.0f} KB more program (1 KB = 1,024 B)",
                  x=0.01, ha="left", fontweight="bold", color=INK, fontsize=12)
     fig.tight_layout()
     save(fig, "6_esp32_memory.png")
@@ -208,7 +239,8 @@ def main():
         ax.bar(xs, acc, 0.6, color=col, edgecolor=SURFACE, linewidth=1)
         ax.bar(xs, ref, 0.6, bottom=acc, color=REFUSED, hatch="///", edgecolor=SURFACE, linewidth=1)
         for x, a, r in zip(xs, acc, ref):
-            label(ax, x, a + r, f"{a:.0f} in" + (f", {r:.0f} told to retry" if r else ""))
+            n = lambda v: f"{v:.0f}" if abs(v - round(v)) < 0.05 else f"{v:.1f}"
+            label(ax, x, a + r, f"{n(a)} in" + (f", {n(r)} told to retry" if r > 0.05 else ""))
         ax.set_xticks(list(xs), [f"{n}" for n in sizes])
         ax.set_xlabel("Devices connecting at the same moment")
         ax.set_title(name, fontsize=11)
@@ -221,7 +253,7 @@ def main():
                             Patch(facecolor=REFUSED, hatch="///", edgecolor=SURFACE,
                                   label="Refused by the 8-handshake limit (they retry)")],
                    loc="upper left", fontsize=8.5)
-    fig.suptitle("The slower post-quantum handshake hits the 8-at-once limit sooner; nobody is dropped for good",
+    fig.suptitle(f"The slower post-quantum handshake hits the 8-at-once limit sooner; nobody is dropped for good ({nr})",
                  x=0.01, ha="left", fontweight="bold", color=INK, fontsize=12)
     fig.tight_layout()
     save(fig, "7_gateway_burst.png")

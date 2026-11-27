@@ -7,7 +7,7 @@
 // 3. Active failure counter (CHECK macro): prevents asserts from evaporating under release builds (SIG-9).
 // 4. Decoupled Steady-State vs KeyGen Heap profiling: verifies zero dynamic heap fragmentation (SIG-7a/b).
 // 5. Formal Standards Compliance: RFC 8032 §7.1 KAT for Ed25519 + NIST FIPS 204 deterministic seed & tamper KAT for ML-DSA-44.
-// 6. Dedicated 64 KB FreeRTOS Tasks: safely accommodates ML-DSA-44 polynomial NTT stack (~33 KB with MLD_CONFIG_REDUCE_RAM).
+// 6. Dedicated 64 KB FreeRTOS Tasks: ML-DSA-44 needs about 15 KB of stack with MLD_CONFIG_REDUCE_RAM (measured 15,476 B).
 
 #define MLD_CONFIG_API_NO_SUPERCOP
 #include <sodium.h>
@@ -15,11 +15,12 @@
 #include <esp_heap_caps.h>
 #include <esp_timer.h>
 #include <math.h>
+#include <esp_arduino_version.h>
 
 #define BENCH_RUNS       100
 #define MSG_SIZE         64
 #define CPU_SPEED        240
-#define BENCH_STACK_SIZE 65536   // 64 KB task stack required for ML-DSA-44 NTT polynomial arithmetic
+#define BENCH_STACK_SIZE 65536   // 64 KB task stack (ML-DSA-44 uses about 15 KB; same size as the VPN's task)
 
 static uint8_t test_message[MSG_SIZE];
 
@@ -58,12 +59,12 @@ struct SignatureKPI {
   StatResult sign;
   StatResult verify;
   float crypto_auth_cost_ms;     // SIG-6: Sign Mean + Verify Mean
-  uint32_t pubkey_bytes;         // SIG-2: Public Key Wire Size
-  uint32_t seckey_bytes;         // Secret Key Storage Size
-  uint32_t sig_bytes;            // SIG-4: Signature Wire Size
-  uint32_t peak_heap_steady;     // SIG-7a: Steady-state (Sign+Verify) Heap Allocation
-  uint32_t peak_heap_keygen;     // SIG-7b: KeyGen Peak Heap (Provisioning)
-  uint32_t peak_stack_bytes;     // SIG-8: Peak Benchmark Task Stack Usage (Crypto Only)
+  unsigned pubkey_bytes;         // SIG-2: Public Key Wire Size
+  unsigned seckey_bytes;         // Secret Key Storage Size
+  unsigned sig_bytes;            // SIG-4: Signature Wire Size
+  unsigned peak_heap_steady;     // SIG-7a: Steady-state (Sign+Verify) Heap Allocation
+  unsigned peak_heap_keygen;     // SIG-7b: KeyGen Peak Heap (Provisioning)
+  unsigned peak_stack_bytes;     // SIG-8: Peak Benchmark Task Stack Usage (Crypto Only)
 };
 
 SignatureKPI kpi_ed25519;
@@ -252,7 +253,7 @@ void test_ed25519() {
   // Warm-up run to prime I-cache and branch predictor
   crypto_sign_ed25519_keypair(g_ed_pk, g_ed_sk);
   crypto_sign_ed25519_detached(g_ed_sig, &sig_length, test_message, MSG_SIZE, g_ed_sk);
-  crypto_sign_ed25519_verify_detached(g_ed_sig, test_message, MSG_SIZE, g_ed_pk);
+  (void)!crypto_sign_ed25519_verify_detached(g_ed_sig, test_message, MSG_SIZE, g_ed_pk);
 
   for (int i = 0; i < BENCH_RUNS; i++) {
     memcpy(iter_message, test_message, MSG_SIZE);
@@ -441,11 +442,15 @@ void setup() {
   Serial.println("\n=================================================================================");
   Serial.println("     ESP32 Digital Signature Micro-Benchmark: Ed25519 vs. ML-DSA-44 (FIPS 204)   ");
   Serial.println("---------------------------------------------------------------------------------");
+  Serial.printf("Build             : %s %s\n", __DATE__, __TIME__);
+  Serial.printf("Arduino core      : %s\n", ESP_ARDUINO_VERSION_STR);
   Serial.printf("ESP-IDF Version   : %s\n", esp_get_idf_version());
+  Serial.printf("libsodium         : %s\n", sodium_version_string());
+  Serial.println("ML-DSA-44 library : PQC_VPN/arduino_libraries/MLDSA44 (mldsa-native v1.0.0-beta2, MLD_CONFIG_REDUCE_RAM)");
   Serial.printf("Chip Model & Rev  : %s (Rev %d)\n", ESP.getChipModel(), ESP.getChipRevision());
-  Serial.printf("CPU Frequency     : %d MHz\n", getCpuFrequencyMhz());
-  Serial.printf("Initial Free Heap : %u bytes\n", ESP.getFreeHeap());
-  Serial.printf("Flash Chip Size   : %u MB\n", ESP.getFlashChipSize() / (1024 * 1024));
+  Serial.printf("CPU Frequency     : %d MHz\n", (int)getCpuFrequencyMhz());
+  Serial.printf("Initial Free Heap : %u bytes\n", (unsigned)ESP.getFreeHeap());
+  Serial.printf("Flash Chip Size   : %u MB\n", (unsigned)(ESP.getFlashChipSize() / (1024 * 1024)));
   Serial.printf("Task Stack Size   : %u bytes (64 KB)\n", BENCH_STACK_SIZE);
   Serial.printf("Benchmark Runs    : %d iterations per algorithm\n", BENCH_RUNS);
   Serial.println("=================================================================================");
@@ -501,6 +506,10 @@ void setup() {
   vSemaphoreDelete(sem);
 
   print_comparison_table();
+  Serial.printf("SIG-6 with medians (sign median + verify median): Ed25519 %.2f ms | ML-DSA-44 %.2f ms\n",
+                kpi_ed25519.sign.median_ms + kpi_ed25519.verify.median_ms,
+                kpi_mldsa44.sign.median_ms + kpi_mldsa44.verify.median_ms);
+  Serial.println("BENCHMARK COMPLETE");
 }
 
 void loop() {

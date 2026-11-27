@@ -1,0 +1,23 @@
+id,metric,column,label,unit,classical_runs,classical_mean,classical_ci95,pqc_runs,pqc_mean,pqc_ci95
+B1,aes_gcm_encrypt_plus_decrypt_64B_per_KB,mean,"AES-256-GCM enc+dec, 64 B message",ms/KB,2.3702;2.3706;2.3716,2.3708,0.0018,2.7111;2.7087;2.7129,2.7109,0.0052
+B1,aes_gcm_encrypt_plus_decrypt_1023B_per_KB,mean,"AES-256-GCM enc+dec, 1,023 B message",ms/KB,1.2111;1.2111;1.2109,1.2110,0.0003,1.2325;1.2324;1.2324,1.2324,0.0001
+B2,handshake_msg1_to_msg4,median,"Handshake (MSG 1-4), median",ms,85.4760;84.0685;87.4100,85.6515,4.1678,183.9585;187.1815;191.6680,187.6027,9.6193
+B2,handshake_msg1_to_msg4,p95,"Handshake (MSG 1-4), p95",ms,129.8570;157.7950;147.1637,144.9386,35.0324,341.1973;309.3338;317.1133,322.5481,41.2710
+B2,tcp_connect_time,median,"TCP connect, median",ms,15.2560;13.7030;21.2385,16.7325,9.8847,14.9020;12.9270;13.7955,13.8748,2.4592
+B2,handshake_failures,mean,Failed handshakes (of 100),,0.0000;0.0000;0.0000,0.0000,0.0000,0.0000;0.0000;0.0000,0.0000,0.0000
+B2,handshake_bytes_on_wire,mean,Handshake bytes on the wire,B,346.0000;346.0000;346.0000,346.0000,0.0000,6562.0000;6562.0000;6562.0000,6562.0000,0.0000
+B3,added_latency_median_64B,mean,"Added round-trip delay, 64 B (median VPN - median plain)",ms,0.3595;-0.1020;0.5185,0.2587,0.8007,0.7680;0.9855;0.7560,0.8365,0.3209
+B3,added_latency_median_1023B,mean,"Added round-trip delay, 1,023 B (median VPN - median plain)",ms,1.6790;-1.6000;2.0025,0.6938,4.9515,0.7435;1.5065;1.5790,1.2763,1.1499
+B4a,max_goodput_application_data,mean,Maximum goodput (application data),kbps,1784.0384;1301.2069;1638.4355,1574.5603,615.3019,1689.2078;1757.8040;1442.8724,1629.9614,411.4418
+B4b,delivered_rate_gateway_acked,mean,Delivered at 102.4 kbps offered,kbps,102.4000;102.4000;102.4000,102.4000,0.0000,102.4000;102.4000;102.4000,102.4000,0.0000
+B4b,ack_latency_under_load,median,"Reply time during the 102.4 kbps stream, median",ms,9.3745;10.5800;10.3575,10.1040,1.5937,9.5945;8.6220;9.5825,9.2663,1.3864
+B4b,ack_latency_under_load,p95,"Reply time during the 102.4 kbps stream, p95",ms,32.0002;41.6901;30.3518,34.6807,15.2191,17.9557;16.2446;16.2880,16.8294,2.4238
+B5,rekey_time,median,"Rekey, median",ms,39.3835;36.1140;37.1330,37.5435,4.1562,22.1530;23.0125;22.3560,22.5072,1.1161
+B5,rekey_time,p95,"Rekey, p95",ms,46.6771;48.6920;113.9965,69.7885,95.1464,28.2922;24.8793;25.7795,26.3170,4.3943
+B6,cpu_idle_tunnel_average,mean,"CPU, tunnel open and quiet",%,0.9522;0.9651;0.9521,0.9565,0.0186,0.9542;0.9641;0.9523,0.9569,0.0157
+B6,cpu_normal_ping_average,mean,"CPU, one ping every 1.5 s",%,1.1318;1.1408;1.1543,1.1423,0.0281,1.1382;1.1403;1.1802,1.1529,0.0588
+B6,cpu_sustained_512B_average,mean,"CPU, 102.4 kbps stream",%,8.9563;8.9278;8.8664,8.9168,0.1141,9.4098;9.3504;9.4088,9.3897,0.0845
+B7,heap_peak_used,mean,Peak heap used,KB,123.4023;130.6133;126.2227,126.7461,9.0277,190.5156;188.9297;189.5195,189.6549,1.9914
+B7,heap_free_now,mean,Heap still free after the run,KB,178.5898;178.7383;178.5352,178.6211,0.2611,86.7383;86.9297;86.9375,86.8685,0.2803
+B7,task_stack_never_used,mean,Task stack never used,KB,3.2812;3.2812;3.2812,3.2812,0.0000,48.1680;48.1680;48.1680,48.1680,0.0000
+B7,flash_firmware_size,mean,Program size (benchmark build),KB,1021.3906;1021.3906;1021.3906,1021.3906,0.0000,1032.9531;1032.9531;1032.9531,1032.9531,0.0000

@@ -762,6 +762,7 @@ void setup() {
   vSemaphoreDelete(sem);
 
   print_comparison_table();
+  Serial.println("BENCHMARK COMPLETE");   // end marker for benchmarking/capture_esp32_bench.py
 }
 
 void loop() {

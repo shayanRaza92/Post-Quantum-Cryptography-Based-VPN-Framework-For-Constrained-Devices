@@ -33,9 +33,9 @@
 #include <math.h>
 
 // --- Wi-Fi & Laptop Gateway Configuration ---
-const char* WIFI_SSID     = "Redmi 13C";
-const char* WIFI_PASSWORD = "92144444";
-const char* LAPTOP_IP     = "10.180.139.216"; // IP printed by python3 benchmark_gateway_kex.py
+const char* WIFI_SSID     = "YOUR_WIFI_SSID";
+const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
+const char* LAPTOP_IP     = "YOUR_LAPTOP_IP"; // IP printed by python3 benchmark_gateway_kex.py
 const uint16_t PORT       = 9000;
 
 // --- Benchmark Iteration Counts ---
