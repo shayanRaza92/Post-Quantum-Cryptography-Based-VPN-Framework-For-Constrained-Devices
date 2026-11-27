@@ -160,6 +160,8 @@ Wireshark (`dumpcap`) records every packet. From the capture we measure, for eac
 
 To look at the packets in Wireshark with readable names: `wireshark -X lua_script:tools/wireshark/drone_auth.lua results/e3/raw/link_<date>_<time>/capture.pcapng`
 
+For a real MAVLink 2 run the same plug-in decodes every TUNNEL / V2_EXTENSION packet field by field (header, message ID, payload fields) and recomputes its MAVLink checksum, then names the authentication fragment it carries. Filter one authentication with e.g. `droneauth.seq == 1829 && droneauth.type != 7`. (`tools/wireshark/mavlink_2_common.lua` is the full MAVLink dissector generated with pymavlink's `mavgen`, kept for reference; it is not needed.)
+
 Afterwards set `ENABLE_LINK_TEST` back to `0` and the Wi-Fi password back to the placeholder before committing.
 
 ---
